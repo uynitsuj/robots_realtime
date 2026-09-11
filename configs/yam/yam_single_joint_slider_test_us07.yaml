@@ -1,0 +1,78 @@
+version: "1"
+
+# Single-arm YAM bring-up test: one Viser slider per joint drives the arm.
+#
+# For the NEW third arm plugged into us07 (not one of the two station arms).
+# Hardware surveyed 2026-09-10:
+#   CANable serial 0065004F594E501820313332 -> can_test  (this arm)
+#   208237984546500A -> can_left, 207B34A158455017 -> can_right  (station, untouched)
+#
+# Usage:
+#   1. ./scripts/setup_can_yam_test_arm.sh          # needs sudo; pins can_test @ 1 Mbit/s
+#   2. uv run rr-session configs/yam/yam_single_joint_slider_test_us07.yaml
+#   3. Open http://localhost:8080
+#        - solid arm   = commanded pose (what the sliders say)
+#        - red ghost   = measured pose from the motors
+#        - "Measured" folder = live joint readouts in radians
+#   4. The agent starts armed: it snaps every slider onto the measured pose,
+#      then the sliders drive the arm live. Untick "Armed" to stop commands.
+#   5. Drag one joint slider at a time and confirm the real arm follows and the
+#      ghost catches up to the solid arm. The command is smoothed (tau) and
+#      slew-limited ("Max joint speed"), so a big drag is one gentle sweep.
+#
+# What happens to the arm before arming: the RobotNode only enables the motors
+# (gravity-comp / compliant, per i2rt's zero_gravity_mode; same comp settings as the us05 xdof_hq arms) and calibrates the
+# gripper — there is NO startup pose move, so a mis-zeroed arm can't lunge.
+# On quit it parks at the folded zero pose over 3 s, like the other YAM configs.
+#
+# Perf debugging: RR_TRACE=1 uv run rr-session <this file>, then
+#   uv run python scripts/analyze_cmd_trace.py debug_traces/yam_test_*.csv
+
+session:
+  save_root: recordings
+  # The agent gates its own output with the "Armed" checkbox; [space] in the
+  # TUI is still available as a global pause.
+  start_paused: false
+
+nodes:
+  - type: ViserTeleopNode
+    name: yam_slider
+    agent_class: robots_realtime.agents.teleoperation.yam_joint_slider_agent:YamJointSliderAgent
+    agent_kwargs:
+      viser_port: 8080
+      # Slider ranges + gripper presence are read from the same robot config
+      # the RobotNode loads, so they can't drift apart.
+      robot_config: robot_configs/yam/test_arm.yaml
+      # Sliders drive the arm live: the agent starts ARMED, but its first
+      # command is always the measured pose (sliders are snapped onto the arm
+      # first), so nothing moves until a slider is dragged. Untick "Armed" in
+      # the GUI to stop sending commands at any time.
+      armed: true
+      # Smoothness: slider target -> first-order filter (tau) -> slew limiter
+      # (max speed). Never steps to a spot; both are live sliders in the GUI.
+      max_joint_speed: 1.0        # rad/s
+      max_gripper_speed: 1.0      # normalized units/s
+      smoothing_tau_s: 0.15       # s
+      # Nominal YAM gripper range [closed, open] in raw rad (calibration on this
+      # arm found 0.10 / -2.83); used to snap the gripper slider onto the
+      # measured opening on sync so the gripper does not jump on arming.
+      gripper_raw_limits: [0.10, -2.83]
+      gripper_initial: 1.0
+    ik_freq: 100.0                # act() / publish rate
+    viz_freq: 20.0
+    state_topics:
+      arm: yam_test/joint_state   # single arm -> publishes yam_slider/joint_pos
+
+  - type: RobotNode
+    name: yam_test
+    robot_config: robot_configs/yam/test_arm.yaml
+    cmd_topic: yam_slider/joint_pos
+    poll_freq: 100
+    # No ramp: the agent guarantees the first command equals the measured pose
+    # and slew-limits everything after. (RobotNode's ramp seeds the gripper slot
+    # from raw radians while the target is normalized, which would otherwise
+    # swing the gripper during the 1.5 s handoff.)
+    ramp_duration_s: 0.0
+    startup_joint_pos: null       # do NOT move an unverified arm at startup
+    shutdown_joint_pos: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    shutdown_duration_s: 3.0

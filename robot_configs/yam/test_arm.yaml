@@ -1,0 +1,48 @@
+# YAM follower arm UNDER TEST at us07 — the third arm, not part of the
+# bimanual station. Same motor layout / gains / limits as
+# robot_configs/yam/xdof_hq/left.yaml; only the CAN channel and name differ.
+#
+# Bring the bus up first:   ./scripts/setup_can_yam_test_arm.sh
+# (pins the new CANable, serial 0065004F594E501820313332, to `can_test`).
+#
+# If this arm has NO gripper (only 6 motors on the bus), delete the 0x07 motor
+# line, shorten motor_offset/motor_direction/kp/kd to 6 entries, and remove
+# gripper_index / enable_gripper_calibration / limit_gripper_force.
+_target_: robots_realtime.robots.safe_motor_chain_robot.SafeMotorChainRobot
+motor_chain:
+  _target_: i2rt.motor_drivers.dm_driver.DMChainCanInterface
+  motor_list:
+    - [0x01, "DM4340"]
+    - [0x02, "DM4340"]
+    - [0x03, "DM4340"]
+    - [0x04, "DM4310"]
+    - [0x05, "DM4310"]
+    - [0x06, "DM4310"]
+    - [0x07, "DM4310"]
+  motor_offset: [0, 0, 0, 0, 0, 0, 0]
+  motor_direction: [1, 1, 1, 1, 1, 1, 1]
+  channel: "can_test"
+  motor_chain_name: "yam_test"
+  receive_mode:
+    _target_: i2rt.motor_drivers.dm_driver.ReceiveMode
+    value: "p16"
+xml_path: "dependencies/i2rt/i2rt/robot_models/arm/yam/yam.xml"
+# Gravity compensation: same as the us05 station follower arms on dev/karim
+# (robot_configs/yam/xdof_hq/{left,right}.yaml, used by the latest us05 configs
+# dated 2026-09-02) but with factor 1.0 instead of 1.45 (requested 2026-09-10).
+use_gravity_comp: true
+gravity_comp_factor: 1.0
+gripper_index: 6
+kp: [80, 80, 80, 40, 15, 15, 20]
+kd: [5, 5, 5, 1.5, 1.5, 1.5, 0.5]
+joint_limits:
+  - [-2.09, 3.14]
+  - [0, 3.14]
+  - [0.05, 3.14]
+  - [-1.35, 1.35]
+  - [-1.50, 1.50]
+  - [-2.00, 2.00]
+# Sweep the gripper at startup to find its real mechanical stops, so a
+# normalized 0/1 command lands on a holdable position (see xdof_hq/left.yaml).
+enable_gripper_calibration: true
+limit_gripper_force: 50.0
