@@ -1,0 +1,42 @@
+# us05 YAM left arm — controller profile matching lab42 market42's `gravity_comp_profile: v8dj_recorded`
+# (the US05 v12dj_recent baseline, packages/market42/configs/us05_siemens_v12dj_recent.json). Differences from
+# robot_configs/yam/xdof_hq/left.yaml, all taken from lab42 (hardware.py + i2rt get_yam_robot):
+#   * gravity model = arm + linear_4310 gripper (yam_linear_4310_gravity.xml, see make_gravity_model.py); xdof_hq
+#     uses the arm-only yam.xml, which leaves the ~0.7 kg gripper uncompensated (2-3 Nm short on joints 2-4)
+#   * gravity_comp_factor 1.3 (was 1.45 — that factor was partly making up for the missing gripper mass)
+#   * wrist kp 10/10/10 (was 40/15/15); kd and gripper gains unchanged; no idle damping / Coulomb feed-forward
+#   * joint limits = i2rt YAM v1 model ranges + 0.15 rad buffer, as get_yam_robot applies them
+_target_: robots_realtime.robots.safe_motor_chain_robot.SafeMotorChainRobot
+motor_chain:
+  _target_: i2rt.motor_drivers.dm_driver.DMChainCanInterface
+  motor_list:
+    - [0x01, "DM4340"]
+    - [0x02, "DM4340"]
+    - [0x03, "DM4340"]
+    - [0x04, "DM4310"]
+    - [0x05, "DM4310"]
+    - [0x06, "DM4310"]
+    - [0x07, "DM4310"]
+  motor_offset: [0, 0, 0, 0, 0, 0, 0]
+  motor_direction: [1, 1, 1, 1, 1, 1, 1]
+  channel: "can_left"
+  motor_chain_name: "yam_left"
+  receive_mode:
+    _target_: i2rt.motor_drivers.dm_driver.ReceiveMode
+    value: "p16"
+xml_path: "robot_configs/yam/xdof_hq_v8dj_recorded/yam_linear_4310_gravity.xml"
+gravity_comp_factor: 1.3
+gripper_index: 6
+kp: [80, 80, 80, 10, 10, 10, 20]
+kd: [5, 5, 5, 1.5, 1.5, 1.5, 0.5]
+joint_limits:
+  - [-2.768, 3.292]
+  - [-0.150, 3.815]
+  - [-0.150, 3.292]
+  - [-1.843, 1.721]
+  - [-1.721, 1.721]
+  - [-2.244, 2.244]
+# Auto-calibrate mechanical gripper limits at startup (open/close sweep at 0.2 Nm) — same as lab42
+# (linear_4310 needs_calibration: true) and xdof_hq; hardcoded limits make the force limiter fight the real stops.
+enable_gripper_calibration: true
+limit_gripper_force: 50.0
