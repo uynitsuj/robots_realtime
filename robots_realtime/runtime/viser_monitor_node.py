@@ -549,6 +549,22 @@ class ViserMonitorNode(Node):
                 self._steer_handles[name] = self._server.scene.add_icosphere(
                     name, radius=rad, color=col, position=tuple(_np.asarray(p, dtype=float)))
 
+        # wrist-camera gaze (SteeringAgent gaze feature): per arm a magenta ray from the camera along its optical
+        # axis and a small magenta sphere on the point it should look at
+        gaze = msg.get("gaze") or {}
+        cams, axes = msg.get("gaze_cam") or {}, msg.get("gaze_axis") or {}
+        for arm, tgt in gaze.items():
+            tname = f"/steering/gaze/{arm}/target"
+            want.add(tname)
+            self._steer_handles[tname] = self._server.scene.add_icosphere(
+                tname, radius=0.012, color=(230, 60, 230), position=tuple(_np.asarray(tgt, dtype=float)))
+            if arm in cams and arm in axes:
+                c = _np.asarray(cams[arm], dtype=_np.float32); a = _np.asarray(axes[arm], dtype=_np.float32)
+                rname = f"/steering/gaze/{arm}/ray"
+                want.add(rname)
+                self._steer_handles[rname] = self._server.scene.add_spline_catmull_rom(
+                    rname, points=_np.stack([c, c + 0.4 * a]), line_width=2.5, color=(230, 60, 230))
+
         for name in list(self._steer_handles):                    # drop stale nodes (K shrank / steering stopped)
             if name not in want:
                 try:
@@ -563,11 +579,15 @@ class ViserMonitorNode(Node):
                     "**steering overlay** — paths: the K candidate chunks' hand paths, coloured by rank of closest approach "
                     "to the target (green = best … grey = worst); the thick one with the green end-sphere is the executed chunk. "
                     "Spheres: red = active target of the phase; orange = bin target; cyan = hole (release) target; small grey "
-                    "= the raw VLM/depth point each target is offset from (thin line).")
+                    "= the raw VLM/depth point each target is offset from (thin line). Magenta: wrist-camera gaze — the ray is "
+                    "the camera's optical axis, the sphere the point it should look at (shake / gripper primitives are named "
+                    "in the text field).")
             except Exception:
                 self._steer_gui = None
         if self._steer_gui is not None:
             phase = msg.get("phase", "?")
+            if msg.get("primitive"):
+                phase = f"{phase} [{msg['primitive']}]"
             robot = "STEERED" if bool(msg.get("steer_enabled", True)) else "PLAIN sample (steering off)"
             if steered:
                 self._steer_gui.value = (f"{phase}  arm={msg.get('arm','?')}  exec k={sel} best k={int(msg.get('best', sel))}/{int(msg.get('K', 0))}  "
