@@ -541,7 +541,8 @@ class ViserMonitorNode(Node):
                     self._steer_handles[lname] = self._server.scene.add_spline_catmull_rom(
                         lname, points=seg, line_width=1.0, color=(255, 140, 0) if key == "bin" else (0, 200, 255))
 
-        for key, col, rad in (("anchor", (235, 30, 30), 0.022), ("bin", (255, 140, 0), 0.016), ("hole", (0, 200, 255), 0.016)):
+        for key, col, rad in (("anchor", (235, 30, 30), 0.022), ("bin", (255, 140, 0), 0.016), ("hole", (0, 200, 255), 0.016),
+                              ("approach", (240, 220, 40), 0.014)):
             p = msg.get(key)
             if p is not None:
                 name = f"/steering/{key}"
@@ -578,7 +579,8 @@ class ViserMonitorNode(Node):
                 self._server.gui.add_markdown(
                     "**steering overlay** — paths: the K candidate chunks' hand paths, coloured by rank of closest approach "
                     "to the target (green = best … grey = worst); the thick one with the green end-sphere is the executed chunk. "
-                    "Spheres: red = active target of the phase; orange = bin target; cyan = hole (release) target; small grey "
+                    "Spheres: red = active target of the phase; orange = bin target; cyan = hole (release) target; yellow = approach "
+                    "waypoint above the slot; small grey "
                     "= the raw VLM/depth point each target is offset from (thin line). Magenta: wrist-camera gaze — the ray is "
                     "the camera's optical axis, the sphere the point it should look at (shake / gripper primitives are named "
                     "in the text field).")
