@@ -33,6 +33,7 @@ camera), not trainmybot's MCAP topic layout.
 | --- | --- | --- | --- |
 | `monitor_readonly_nocams.yaml` | read-only | read-only | nothing; safe any time |
 | `monitor_readonly.yaml` | read-only | read-only | nothing; needs the cameras free |
+| `teleop_vendor_gentle_left.yaml` | left pair only of the gentle config | | yes (left arms only) |
 | `teleop_vendor_gentle.yaml` | vendor, no haptics | vendor, 1 rad/s cap, 0.1 rad lead | yes |
 | `teleop_vendor.yaml` | vendor + wrench feedback | vendor, Scale-like limits | yes |
 | `teleop_vendor_left.yaml` | left pair of the above | | yes |
