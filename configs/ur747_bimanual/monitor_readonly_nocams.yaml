@@ -1,0 +1,56 @@
+# 747 monitor without cameras: all four arms READ-ONLY. Safe at any time.
+#   uv run rr-session configs/ur747_bimanual/monitor_readonly_nocams.yaml
+version: "1"
+
+session:
+  save_root: recordings/ur747
+
+nodes:
+  # ── left pair: UR3e leader -> UR5e follower ─────────────────────────────
+  - type: AgentNode
+    name: arm_left_leader
+    agent_class: robots_realtime.agents.teleoperation.ur_leader_agent:URLeaderAgent
+    agent_kwargs:
+      robot_config: robot_configs/ur747/left_leader_readonly.yaml
+      robot_name: arm_left_follower
+      follow: always            # always (Scale) | grab (follower holds while the handle is released)
+      haptic_scale: 1.0          # gain on the follower wrench sent to the leader
+    state_topics:
+      arm_left_follower: arm_left_follower/joint_state
+    loop_mode: fixed_rate
+    poll_freq: 500
+
+  - type: RobotNode
+    name: arm_left_follower
+    robot_config: robot_configs/ur747/left_follower_readonly.yaml
+    cmd_topic: arm_left_leader/joint_pos
+    cmd_timeout_s: 0.1
+    poll_freq: 500
+    startup_joint_pos: null     # never auto-move a UR to a fixed pose
+    shutdown_joint_pos: null    # (the RobotNode default parks at all-zeros: unsafe on a UR)
+    ramp_duration_s: 1.5        # blend from the follower's pose onto the leader at (re)start
+
+  # ── right pair: UR3e leader -> UR5e follower ─────────────────────────────
+  - type: AgentNode
+    name: arm_right_leader
+    agent_class: robots_realtime.agents.teleoperation.ur_leader_agent:URLeaderAgent
+    agent_kwargs:
+      robot_config: robot_configs/ur747/right_leader_readonly.yaml
+      robot_name: arm_right_follower
+      follow: always            # always (Scale) | grab (follower holds while the handle is released)
+      haptic_scale: 1.0          # gain on the follower wrench sent to the leader
+    state_topics:
+      arm_right_follower: arm_right_follower/joint_state
+    loop_mode: fixed_rate
+    poll_freq: 500
+
+  - type: RobotNode
+    name: arm_right_follower
+    robot_config: robot_configs/ur747/right_follower_readonly.yaml
+    cmd_topic: arm_right_leader/joint_pos
+    cmd_timeout_s: 0.1
+    poll_freq: 500
+    startup_joint_pos: null     # never auto-move a UR to a fixed pose
+    shutdown_joint_pos: null    # (the RobotNode default parks at all-zeros: unsafe on a UR)
+    ramp_duration_s: 1.5        # blend from the follower's pose onto the leader at (re)start
+

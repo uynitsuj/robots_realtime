@@ -27,6 +27,8 @@ To build your own YAM active leader arms refer to: [lerobot_teleoperator_yamacti
 
 [VR streaming MuJoCo sim to Quest](docs/vr_streaming.md)
 
+[747 bimanual UR teleop on dionysus (UR3e leaders, UR5e followers, Orbbec cameras)](docs/ur747_bimanual.md)
+
 ---
 
 ## Installation

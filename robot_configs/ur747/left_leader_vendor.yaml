@@ -1,0 +1,15 @@
+# left UR3e leader (192.168.0.10) — Scale-equivalent: vendor "Default program" (admittance from its F/T
+# sensor; moves only while the grab button is held). This driver Plays it and Stops it on exit, and writes the
+# follower's flange wrench to registers 24-29 for the program's contact damping (Scale's wrench feedback).
+# Bring-up: Remote, "Default program" loaded and STOPPED, recording_studio "Robot Arms" OFF. Hands off the
+# handle while it starts (F/T zeroing, possible elbow/wrist movej).
+_target_: robots_realtime.robots.ur_leader_arm.URLeaderArm
+ip: "192.168.0.10"
+name: left_leader
+rate: 500.0
+trigger_divisor: 13.0        # Scale: gripper command = trigger volts / 13
+gripper_closed_cmd: 0.92
+extra_outputs: [actual_current, joint_control_output, joint_temperatures, target_q]
+manage_program: true
+haptic_feedback: true
+haptic_limit: 60.0

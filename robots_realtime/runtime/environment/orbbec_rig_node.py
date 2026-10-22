@@ -29,8 +29,10 @@ class OrbbecRigNode(Node):
 
     Args:
         name: Node name (topics are ``{name}/{camera}``).
-        cameras: ``[{camera: top, serial: CV3H46000036}, ...]``.
-        width/height/fps/enable_depth/work_mode: Passed to every
+        cameras: ``[{camera: top, serial: CV3H46000036}, ...]``. An entry may override
+            ``width``, ``height``, ``fps``, ``stream``, ``enable_depth`` or ``work_mode``
+            for that camera (e.g. ``fps: 60`` on the top camera, as recording_studio).
+        width/height/fps/stream/enable_depth/work_mode: Defaults passed to every
             :class:`~robots_realtime.sensors.cameras.orbbec_camera.OrbbecCamera`.
         poll_freq: Publish loop rate [Hz].
         publish_freq: Bus rate cap per camera [Hz]; recording still gets every frame.
@@ -47,8 +49,9 @@ class OrbbecRigNode(Node):
         width: int = 848,
         height: int = 530,
         fps: int = 15,
+        stream: str = "color",
         enable_depth: bool = True,
-        work_mode: str = "Default",
+        work_mode: str | None = None,
         rig_yaml: str | None = None,
         poll_freq: float = 30.0,
         publish_freq: float | None = None,
@@ -62,8 +65,8 @@ class OrbbecRigNode(Node):
         super().__init__(name=name, writer=None, **kwargs)
         self._specs = list(cameras or [])
         self.published_topics = [str(c["camera"]) for c in self._specs]
-        self._cam_kwargs = dict(width=width, height=height, fps=fps, enable_depth=enable_depth,
-                                work_mode=work_mode, rig_yaml=rig_yaml)
+        self._cam_kwargs = dict(width=width, height=height, fps=fps, stream=stream,
+                                enable_depth=enable_depth, work_mode=work_mode, rig_yaml=rig_yaml)
         self._fps = float(fps)
         self._record = bool(record)
         self._cams: dict[str, Any] = {}
@@ -77,17 +80,31 @@ class OrbbecRigNode(Node):
     def setup(self) -> None:
         import pyorbbecsdk as ob
 
-        from robots_realtime.sensors.cameras.orbbec_camera import OrbbecCamera, prepare
+        from robots_realtime.sensors.cameras.orbbec_camera import DUAL_COLOR_WORK_MODE, OrbbecCamera, prepare
 
-        prepare([str(c["serial"]) for c in self._specs], self._cam_kwargs["work_mode"])
+        by_mode: dict[str, list[str]] = {}
+        for spec in self._specs:
+            kw = self._kwargs_for(spec)
+            mode = kw["work_mode"] or (DUAL_COLOR_WORK_MODE if kw["stream"] != "color" else "Default")
+            by_mode.setdefault(mode, []).append(str(spec["serial"]))
+        for mode, serials in by_mode.items():
+            prepare(serials, mode)
         self._ctx = ob.Context()
         for spec in self._specs:
             cam = str(spec["camera"])
-            self._cams[cam] = OrbbecCamera(str(spec["serial"]), camera=cam, context=self._ctx, **self._cam_kwargs)
+            self._cams[cam] = OrbbecCamera(str(spec["serial"]), camera=cam, context=self._ctx,
+                                           **self._kwargs_for(spec))
         for cam in self._cams:
             t = threading.Thread(target=self._reader, args=(cam,), daemon=True, name=f"Orbbec-{cam}")
             t.start()
             self._threads.append(t)
+
+    _OVERRIDES = ("width", "height", "fps", "stream", "enable_depth", "work_mode")
+
+    def _kwargs_for(self, spec: dict) -> dict:
+        kw = dict(self._cam_kwargs)
+        kw.update({k: spec[k] for k in self._OVERRIDES if k in spec})
+        return kw
 
     def _reader(self, cam: str) -> None:
         drv = self._cams[cam]
@@ -128,8 +145,9 @@ class OrbbecRigNode(Node):
         if self._record:
             from robots_realtime.runtime.recording import RgbdWriter
 
-            for cam in self._cams or [str(c["camera"]) for c in self._specs]:
-                w = RgbdWriter(fps=self._fps)
+            fps = {str(c["camera"]): float(self._kwargs_for(c)["fps"]) for c in self._specs}
+            for cam in self._cams or list(fps):
+                w = RgbdWriter(fps=fps.get(cam, self._fps))
                 w.open(save_dir, f"{self.name}_{cam}")
                 self._writers[cam] = w
         self._recording = True
@@ -151,7 +169,7 @@ class OrbbecRigNode(Node):
 
     @classmethod
     def build_kwargs(cls, params: dict) -> dict:
-        keys = ("name", "cameras", "width", "height", "fps", "enable_depth", "work_mode", "rig_yaml",
+        keys = ("name", "cameras", "width", "height", "fps", "stream", "enable_depth", "work_mode", "rig_yaml",
                 "poll_freq", "publish_freq", "record")
         return {k: params[k] for k in keys if k in params}
 

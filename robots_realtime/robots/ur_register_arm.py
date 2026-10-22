@@ -89,9 +89,12 @@ RUNTIME_PLAYING = 2
 
 _OUT_NAMES = [
     "robot_mode", "safety_mode", "runtime_state",
-    "actual_q", "actual_qd", "actual_TCP_pose", "tcp_offset",
+    "actual_q", "actual_qd", "actual_TCP_pose", "tcp_offset", "actual_TCP_force",
     f"output_double_register_{GRIPPER_STATE_REG}",
 ]
+# Program outputs 24..29: the vendor follower publishes its flange wrench there
+# (flange frame, N / Nm); "rr servo" publishes the joint reference it tracks.
+_OUT_PROGRAM_REGS = [f"output_double_register_{JOINT_CMD_BASE + i}" for i in range(N_JOINTS)]
 _IN_REG_NAMES = [f"input_double_register_{i}" for i in range(JOINT_CMD_BASE, GRIPPER_CMD_REG + 1)]
 _IN_NAMES = _IN_REG_NAMES + ["speed_slider_mask", "speed_slider_fraction"]
 _IN_TYPES = ["DOUBLE"] * len(_IN_REG_NAMES) + ["UINT32", "DOUBLE"]
@@ -135,6 +138,10 @@ class URRegisterArm:
             someone may be using the rig).
         tcp_offset_tolerance: Max mismatch [m] between rig.yaml's TCP and RTDE
             ``tcp_offset`` before warning.
+        extra_outputs: Further RTDE output fields to stream (e.g. ``target_q``,
+            ``actual_current``, ``joint_control_output``, ``speed_scaling``,
+            ``joint_temperatures``); each appears in the observations as
+            ``rtde_<field>``. See UR's RTDE guide for the field list.
     """
 
     def __init__(
@@ -161,6 +168,7 @@ class URRegisterArm:
         play_on_start: bool = True,
         allow_attach_playing: bool = False,
         tcp_offset_tolerance: float = 0.005,
+        extra_outputs: list[str] | tuple[str, ...] = (),
         rtde_factory: Any = None,
         rest: Any = None,
     ) -> None:
@@ -189,6 +197,7 @@ class URRegisterArm:
         self.play_on_start = bool(play_on_start)
         self.allow_attach_playing = bool(allow_attach_playing)
         self.tcp_offset_tolerance = float(tcp_offset_tolerance)
+        self.extra_outputs = tuple(str(f) for f in extra_outputs)
         self._rtde_factory = rtde_factory
         self._rest = rest or _Rest(ip)
 
@@ -253,7 +262,8 @@ class URRegisterArm:
         con.connect()
         con.get_controller_version()
         servo = self.program == SERVO_PROGRAM
-        if not con.send_output_setup(_OUT_NAMES + ([SERVO_TOKEN_OUT] if servo else []), frequency=self.rate):
+        outputs = _OUT_NAMES + _OUT_PROGRAM_REGS + ([SERVO_TOKEN_OUT] if servo else []) + list(self.extra_outputs)
+        if not con.send_output_setup(outputs, frequency=self.rate):
             con.disconnect()
             raise URRegisterError(f"[{self.name}] RTDE output setup rejected by {self.ip}")
         if self.enable_motion:
@@ -295,6 +305,9 @@ class URRegisterArm:
             "tcp_pose": np.asarray(s.actual_TCP_pose, dtype=np.float64),
             "tcp_offset": np.asarray(s.tcp_offset, dtype=np.float64),
             "gripper_raw": raw_grip,
+            "tcp_force": np.asarray(getattr(s, "actual_TCP_force", None) or [0.0] * 6, dtype=np.float64),
+            "program_out": np.array([float(getattr(s, n, 0.0) or 0.0) for n in _OUT_PROGRAM_REGS]),
+            "extra": {f: getattr(s, f, None) for f in self.extra_outputs},
         }
 
     def _write(self, joints: np.ndarray, gripper_raw: float, goal_time: float | None = None,
@@ -528,7 +541,23 @@ class URRegisterArm:
             "driving": np.array([1 if (self._driving and latched is None) else 0]),
             "latched": np.array([0 if latched is None else 1]),
             "state_t": np.array([s["t"]]),
+            "tcp_force": s["tcp_force"].copy(),  # RTDE actual_TCP_force: TCP wrench, base frame
+            **self._program_outputs(s),
+            **{f"rtde_{k}": np.atleast_1d(np.asarray(v, dtype=np.float64))
+               for k, v in s["extra"].items() if v is not None},
         }
+
+    def _program_outputs(self, s: dict) -> dict[str, np.ndarray]:
+        """Program registers 24..29, named for the program that writes them.
+
+        Output registers keep their last value after a program stops, so they
+        are only reported while it is PLAYING.
+        """
+        if s["runtime_state"] != RUNTIME_PLAYING:
+            return {}
+        if self.program == SERVO_PROGRAM:
+            return {"servo_reference": s["program_out"].copy()}
+        return {"flange_wrench": s["program_out"].copy()}  # vendor follower: flange frame
 
     @property
     def latched_reason(self) -> str | None:

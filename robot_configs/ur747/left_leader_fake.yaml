@@ -1,0 +1,6 @@
+# SIMULATED left UR3e leader: a hand sweeping the handle around the follower's home pose.
+_target_: robots_realtime.robots.fake_ur.FakeURLeaderArm
+follower: left
+rig_yaml: configs/ur747_bimanual/rig_fake.yaml
+rate: 500.0
+haptic_feedback: true

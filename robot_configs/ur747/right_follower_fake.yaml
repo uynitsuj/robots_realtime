@@ -1,0 +1,9 @@
+# SIMULATED right follower: FakeURController behind the real URRegisterArm logic.
+_target_: robots_realtime.robots.fake_ur.FakeURRegisterArm
+name: right
+rig_yaml: configs/ur747_bimanual/rig_fake.yaml
+rate: 500.0
+goal_time: 0.007
+max_joint_vel: 3.0
+max_lead: 0.35
+speed_fraction: 1.0

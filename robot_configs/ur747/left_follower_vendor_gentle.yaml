@@ -1,0 +1,20 @@
+# left UR5e follower (192.168.0.11) — vendor "Default program" with tight guard rails for first
+# runs and new operators (same bring-up as *_follower_vendor.yaml).
+
+_target_: robots_realtime.robots.ur_register_arm.URRegisterArm
+ip: "192.168.0.11"
+name: left
+joint_lower: [-6.2831853, -6.2831853, -6.2831853, -6.2831853, -6.2831853, -6.2831853]
+joint_upper: [6.2831853, 6.2831853, 6.2831853, 6.2831853, 6.2831853, 6.2831853]
+cmd_timeout_s: 0.1           # a command older than this is replaced by "hold here"
+restore_speed_fraction: 0.30 # slider value found on the rig; restored on hand-back
+extra_outputs: [target_q, target_qd, target_qdd, target_current, target_moment, actual_current, joint_control_output, joint_temperatures, speed_scaling, target_speed_fraction]
+enable_motion: true
+program: Default program
+rate: 500.0
+goal_time: 0.007
+max_joint_vel: 1.0
+max_lead: 0.10
+speed_fraction: 0.30
+play_on_start: true
+allow_attach_playing: false

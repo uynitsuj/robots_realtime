@@ -1,0 +1,22 @@
+# right UR5e follower (192.168.0.13) — Scale-equivalent: the vendor "Default program" (MotionGuide
+# joint impedance, Kp 600/600/300/28/28/28 Nm/rad, no integral) driven through registers 24-31 at
+# recording_studio's rate and goal time. Bring-up: pendant Automatic + Remote, "Default program" loaded
+# and STOPPED, recording_studio "Robot Arms" OFF, stop latch clear.
+
+_target_: robots_realtime.robots.ur_register_arm.URRegisterArm
+ip: "192.168.0.13"
+name: right
+joint_lower: [-6.2831853, -6.2831853, -6.2831853, -6.2831853, -6.2831853, -6.2831853]
+joint_upper: [6.2831853, 6.2831853, 6.2831853, 6.2831853, 6.2831853, 6.2831853]
+cmd_timeout_s: 0.1           # a command older than this is replaced by "hold here"
+restore_speed_fraction: 0.30 # slider value found on the rig; restored on hand-back
+extra_outputs: [target_q, target_qd, target_qdd, target_current, target_moment, actual_current, joint_control_output, joint_temperatures, speed_scaling, target_speed_fraction]
+enable_motion: true
+program: Default program
+rate: 500.0
+goal_time: 0.007             # register 30: ramp time to each new target (recording_studio: 0.007)
+max_joint_vel: 3.0           # rad/s setpoint cap; the vendor program itself has none
+max_lead: 0.35               # rad, setpoint never leads actual_q by more
+speed_fraction: 0.30         # speed slider while driving; direct_torque is probably not scaled by it
+play_on_start: true
+allow_attach_playing: false

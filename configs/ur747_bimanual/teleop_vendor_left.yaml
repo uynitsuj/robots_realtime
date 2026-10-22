@@ -1,0 +1,48 @@
+# 747 teleop, left pair only (what recording_studio's config enables today), Scale-equivalent.
+#   uv run rr-session configs/ur747_bimanual/teleop_vendor_left.yaml
+version: "1"
+
+session:
+  save_root: recordings/ur747
+
+nodes:
+  # ── left pair: UR3e leader -> UR5e follower ─────────────────────────────
+  - type: AgentNode
+    name: arm_left_leader
+    agent_class: robots_realtime.agents.teleoperation.ur_leader_agent:URLeaderAgent
+    agent_kwargs:
+      robot_config: robot_configs/ur747/left_leader_vendor.yaml
+      robot_name: arm_left_follower
+      follow: always            # always (Scale) | grab (follower holds while the handle is released)
+      haptic_scale: 1.0          # gain on the follower wrench sent to the leader
+    state_topics:
+      arm_left_follower: arm_left_follower/joint_state
+    loop_mode: fixed_rate
+    poll_freq: 500
+
+  - type: RobotNode
+    name: arm_left_follower
+    robot_config: robot_configs/ur747/left_follower_vendor.yaml
+    cmd_topic: arm_left_leader/joint_pos
+    cmd_timeout_s: 0.1
+    poll_freq: 500
+    startup_joint_pos: null     # never auto-move a UR to a fixed pose
+    shutdown_joint_pos: null    # (the RobotNode default parks at all-zeros: unsafe on a UR)
+    ramp_duration_s: 1.5        # blend from the follower's pose onto the leader at (re)start
+
+  # ── cameras: as recording_studio records them ────────────────────────────
+  # Orbbec Gemini 305g over GMSL2, "Dual Color Streams" work mode, LEFT colour image, 848x480;
+  # top 60 Hz, the others 30 Hz. All four in one process (the SDK does not share GMSL cameras
+  # across processes). Needs recording_studio.service running with its camera stage OFF.
+  - type: OrbbecRigNode
+    name: cams
+    stream: color_left
+    width: 848
+    height: 480
+    fps: 30
+    poll_freq: 60
+    cameras:
+      - {camera: top, serial: "CV3H46000036", fps: 60}
+      - {camera: bottom, serial: "CV3H4600001A"}
+      - {camera: right_wrist, serial: "CV3H46000012"}
+      - {camera: left_wrist, serial: "CV3H4600008Z"}

@@ -17,6 +17,7 @@ Action format (returned by agent.act()):
                                              multiple keys → {key}_pos each
     arm_key set                            — extract action[arm_key]["pos"] → joint_pos
     "_record" key                          — forwarded as record signal
+    "_state" key                           — published (and recorded) as {name}/state
 
 Published topics:
     ``{name}/joint_pos``     — single-arm command
@@ -61,7 +62,7 @@ class AgentNode(Node):
     """
 
     role = NodeRole.CONTROLLER
-    published_topics: list[str] = ["joint_pos", "record"]
+    published_topics: list[str] = ["joint_pos", "record", "state"]
 
     def __init__(
         self,
@@ -159,6 +160,12 @@ class AgentNode(Node):
         chunk = action.get("_chunk")
         if chunk is not None:
             self.publish("chunk", chunk, ts=ts)
+
+        # Optional agent-side state (e.g. a teleop leader's buttons, trigger and
+        # wrench) published and recorded as {name}/state.
+        state = action.get("_state")
+        if state is not None:
+            self.publish("state", state, ts=ts)
 
         # Optional preprocessed-image snapshots — the exact frames fed to the
         # policy. Mirrored on image/{label} so downstream viewers (viser

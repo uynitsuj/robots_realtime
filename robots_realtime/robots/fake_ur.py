@@ -1,4 +1,4 @@
-"""Simulated dionysus follower for hardware-free rehearsals.
+"""Simulated dionysus followers and leaders for hardware-free rehearsals.
 
 ``FakeURRegisterArm`` is the real :class:`URRegisterArm` — same bring-up, rate
 limiting, floor, latch and hand-back code — talking to :class:`FakeURController`,
@@ -119,4 +119,89 @@ def FakeURRegisterArm(name: str, rig_yaml: str | None = None, **kwargs) -> URReg
     return URRegisterArm(arm.ip, name=name, rtde_factory=fake, rest=fake, rig_yaml=rig_yaml, **kwargs)
 
 
-__all__ = ["FakeURController", "FakeURRegisterArm"]
+class FakeURLeaderController:
+    """RTDE + REST stand-in for one UR3e leader: a hand moving the handle.
+
+    Joints sweep smoothly around ``q0``; the grab button is held; the trigger
+    ramps between open and closed. Records the haptic registers written to it.
+    """
+
+    def __init__(self, q0, amplitude: float = 0.15, period_s: float = 6.0, rate: float = 500.0) -> None:
+        self.q0 = np.asarray(q0, dtype=np.float64).copy()
+        self.amplitude = float(amplitude)
+        self.period_s = float(period_s)
+        self.period = 1.0 / rate
+        self.t0 = time.time()
+        self._last = self.t0
+        self.playing = False
+        self.haptic = np.zeros(6)
+
+    def __call__(self, ip, port):
+        return self
+
+    def connect(self):
+        pass
+
+    def get_controller_version(self):
+        return (10, 12, 1, 0)
+
+    def send_output_setup(self, names, types=(), frequency=500):
+        self.period = 1.0 / float(frequency)
+        return True
+
+    def send_input_setup(self, names, types=()):
+        return SimpleNamespace(**{n: 0.0 for n in names})
+
+    def send_start(self):
+        return True
+
+    def send_pause(self):
+        return True
+
+    def disconnect(self):
+        pass
+
+    def send(self, setp):
+        self.haptic = np.array([float(getattr(setp, f"input_double_register_{24 + i}")) for i in range(6)])
+
+    def receive(self):
+        sleep = self.period - (time.time() - self._last)
+        if sleep > 0:
+            time.sleep(sleep)
+        self._last = time.time()
+        phase = 2.0 * np.pi * (self._last - self.t0) / self.period_s
+        q = self.q0 + self.amplitude * np.sin(phase + np.arange(6) * 0.7) * np.array([1, 0.5, 0.5, 1, 1, 1])
+        volts = 6.0 * (1.0 - np.cos(phase))  # 0 .. 12 V
+        return SimpleNamespace(
+            robot_mode=7, safety_mode=1, runtime_state=2 if self.playing else 1,
+            actual_q=q.tolist(), actual_qd=[0.0] * 6, actual_TCP_pose=[0.0] * 6, actual_TCP_force=[0.0] * 6,
+            actual_digital_input_bits=1 << 16, tool_analog_input0=float(volts),
+            **{f"output_double_register_{24 + i}": 0.0 for i in range(6)},
+            output_double_register_30=float(volts) / 13.0,
+        )
+
+    def status(self):
+        return {"control_mode": "REMOTE", "safety_mode": "NORMAL", "loaded_program": "Default program",
+                "program_state": "PLAYING" if self.playing else "STOPPED"}
+
+    def play(self):
+        self.playing = True
+        return {"state": "PLAYING"}
+
+    def stop(self):
+        self.playing = False
+        return True, "STOPPED"
+
+
+def FakeURLeaderArm(follower: str, rig_yaml: str | None = None, **kwargs):
+    """A URLeaderArm on a FakeURLeaderController sweeping around ``follower``'s home pose."""
+    from robots_realtime.rig.dionysus import load_rig
+    from robots_realtime.robots.ur_leader_arm import URLeaderArm
+
+    rig = load_rig(rig_yaml)
+    fake = FakeURLeaderController(rig.arms[follower].home_q)
+    kwargs.setdefault("manage_program", True)
+    return URLeaderArm(f"fake-leader-{follower}", name=f"{follower}_leader", rtde_factory=fake, rest=fake, **kwargs)
+
+
+__all__ = ["FakeURController", "FakeURLeaderArm", "FakeURLeaderController", "FakeURRegisterArm"]

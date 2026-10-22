@@ -1,0 +1,21 @@
+# left UR5e follower (192.168.0.11) — "rr servo": a servoj position servo on the same registers
+# (robots_realtime/rig/servo_program.py; gain, lookahead, vmax and max_jump are baked in when the program is
+# built: `rr-ur-servo-program build ...`). Stiff, converges on the target, no impedance deadband.
+# Bring-up: "rr servo" uploaded and loaded on the pendant, STOPPED, Remote; load "Default program" back after.
+
+_target_: robots_realtime.robots.ur_register_arm.URRegisterArm
+ip: "192.168.0.11"
+name: left
+joint_lower: [-6.2831853, -6.2831853, -6.2831853, -6.2831853, -6.2831853, -6.2831853]
+joint_upper: [6.2831853, 6.2831853, 6.2831853, 6.2831853, 6.2831853, 6.2831853]
+cmd_timeout_s: 0.1           # a command older than this is replaced by "hold here"
+restore_speed_fraction: 0.30 # slider value found on the rig; restored on hand-back
+extra_outputs: [target_q, target_qd, target_qdd, target_current, target_moment, actual_current, joint_control_output, joint_temperatures, speed_scaling, target_speed_fraction]
+enable_motion: true
+program: rr servo
+rate: 500.0
+max_joint_vel: 1.5           # client-side cap; the program also walks its reference at <= vmax
+max_lead: 0.20
+speed_fraction: 1.0          # servoj IS scaled by the slider
+play_on_start: true
+allow_attach_playing: false

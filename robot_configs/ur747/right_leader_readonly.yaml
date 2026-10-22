@@ -1,0 +1,11 @@
+# right UR3e leader (192.168.0.12) — READ-ONLY: joints, buttons, trigger and wrench; never writes or plays.
+# Safe alongside recording_studio (it must be playing the leader program for the handle to move).
+_target_: robots_realtime.robots.ur_leader_arm.URLeaderArm
+ip: "192.168.0.12"
+name: right_leader
+rate: 500.0
+trigger_divisor: 13.0        # Scale: gripper command = trigger volts / 13
+gripper_closed_cmd: 0.92
+extra_outputs: [actual_current, joint_control_output, joint_temperatures, target_q]
+manage_program: false
+haptic_feedback: false

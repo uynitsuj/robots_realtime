@@ -36,6 +36,20 @@ from robots_realtime.sensors.cameras.camera import CameraData
 log = logging.getLogger(__name__)
 
 WORK_MODE_SETTLE_S = 3.5
+DUAL_COLOR_WORK_MODE = "Dual Color Streams"
+# stream -> (sensor-type names, frame-type names): the SDK's names differ across builds.
+_STREAMS = {
+    "color": (("COLOR_SENSOR",), ("COLOR_FRAME",)),
+    "color_left": (("LEFT_COLOR_SENSOR", "COLOR_LEFT_SENSOR"), ("LEFT_COLOR_FRAME", "COLOR_LEFT_FRAME")),
+    "color_right": (("RIGHT_COLOR_SENSOR", "COLOR_RIGHT_SENSOR"), ("RIGHT_COLOR_FRAME", "COLOR_RIGHT_FRAME")),
+}
+
+
+def _enum(enum_cls, names: tuple[str, ...]):
+    for n in names:
+        if hasattr(enum_cls, n):
+            return getattr(enum_cls, n)
+    raise OrbbecCameraError(f"this pyorbbecsdk build has none of {names} in {enum_cls.__name__}")
 _DEPTH_MIN_M = 0.03
 _DEPTH_MAX_M = 6.0
 
@@ -118,7 +132,11 @@ class OrbbecCamera:
             selects the extrinsics from the rig model. (``name`` is accepted too;
             CameraNode keeps ``name`` for itself, so session YAMLs use ``camera``.)
         width/height/fps: Colour and depth profile (848x530@30 is the calibrated one).
-        enable_depth: Stream DEPTH and align it to colour.
+        stream: ``color`` (the depth work modes' colour sensor), or ``color_left`` /
+            ``color_right``: one image of the colour stereo pair, which only exists in the
+            ``Dual Color Streams`` work mode. recording_studio (Scale) records
+            ``color_left`` at 848x480. Dual-colour streams have no depth.
+        enable_depth: Stream DEPTH and align it to colour (``stream: color`` only).
         work_mode: Depth work mode to switch into when the device is elsewhere.
         rig_yaml: Rig model for ``extrinsics`` (``None`` = default rig.yaml,
             ``""`` = none).
@@ -135,8 +153,9 @@ class OrbbecCamera:
         width: int = 848,
         height: int = 530,
         fps: int = 30,
+        stream: str = "color",
         enable_depth: bool = True,
-        work_mode: str = "Default",
+        work_mode: str | None = None,
         rig_yaml: str | None = None,
         timeout_ms: int = 500,
         context: Any = None,
@@ -145,8 +164,12 @@ class OrbbecCamera:
         self.serial = str(serial)
         self.name = camera or name or self.serial
         self.width, self.height, self.fps = int(width), int(height), int(fps)
-        self.enable_depth = bool(enable_depth)
-        self.work_mode = work_mode
+        if stream not in _STREAMS:
+            raise OrbbecCameraError(f"stream must be one of {sorted(_STREAMS)}, got {stream!r}")
+        self.stream = stream
+        dual = stream != "color"
+        self.enable_depth = bool(enable_depth) and not dual
+        self.work_mode = work_mode or (DUAL_COLOR_WORK_MODE if dual else "Default")
         self.timeout_ms = int(timeout_ms)
         self.intrinsic_data: dict | None = None
         self.extrinsics: dict | None = None
@@ -160,13 +183,15 @@ class OrbbecCamera:
         except Exception:
             pass
         dev = self._open_device()
-        if self.enable_depth:
+        if self.enable_depth or dual:
             dev = self._ensure_work_mode(dev)
         self._dev = dev
         self._pipeline = ob.Pipeline(dev)
         cfg = ob.Config()
-        self._color_profile = self._pick(ob.OBSensorType.COLOR_SENSOR, (ob.OBFormat.RGB, ob.OBFormat.MJPG,
-                                                                          ob.OBFormat.YUYV))
+        sensor_names, frame_names = _STREAMS[self.stream]
+        self._frame_type = _enum(ob.OBFrameType, frame_names) if dual else None
+        self._color_profile = self._pick(_enum(ob.OBSensorType, sensor_names),
+                                         (ob.OBFormat.RGB, ob.OBFormat.MJPG, ob.OBFormat.YUYV))
         cfg.enable_stream(self._color_profile)
         self._align = None
         if self.enable_depth:
@@ -186,8 +211,8 @@ class OrbbecCamera:
             ) from e
         self.intrinsic_data = self.read_calibration_data_intrinsics()
         self.extrinsics = self._load_extrinsics(rig_yaml)
-        log.info("[%s] Orbbec %s streaming %dx%d@%d depth=%s mode=%s", self.name, self.serial,
-                 self.width, self.height, self.fps, self.enable_depth, self.work_mode)
+        log.info("[%s] Orbbec %s streaming %s %dx%d@%d depth=%s mode=%s", self.name, self.serial,
+                 self.stream, self.width, self.height, self.fps, self.enable_depth, self.work_mode)
 
     # ── setup ─────────────────────────────────────────────────────────────
 
@@ -287,7 +312,7 @@ class OrbbecCamera:
                             frames = frames.as_frame_set()
                         except Exception:
                             pass
-                color = frames.get_color_frame() if frames is not None else None
+                color = self._color_frame(frames) if frames is not None else None
                 depth = frames.get_depth_frame() if (frames is not None and self.enable_depth) else None
                 if color is not None and (depth is not None or not self.enable_depth):
                     break
@@ -305,6 +330,14 @@ class OrbbecCamera:
             result.depth_data = None  # type: ignore[attr-defined]
         self._last_ts = ts_ms
         return result
+
+    def _color_frame(self, frames):
+        if self._frame_type is None:
+            return frames.get_color_frame()
+        frame = frames.get_frame(self._frame_type)
+        if frame is None:
+            return None
+        return frame.as_video_frame() if hasattr(frame, "as_video_frame") else frame
 
     def read_calibration_data_intrinsics(self) -> dict[str, Any]:
         intr = self._color_profile.get_intrinsic()
@@ -333,6 +366,7 @@ class OrbbecCamera:
             "width": self.width,
             "height": self.height,
             "fps": self.fps,
+            "stream": self.stream,
             "depth": self.enable_depth,
             "work_mode": self.work_mode,
         }
