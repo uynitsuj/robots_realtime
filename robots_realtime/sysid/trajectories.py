@@ -39,6 +39,7 @@ DT = 1.0 / RATE
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ENVELOPE = ROOT / "configs" / "ur747_bimanual" / "sysid" / "envelope.yaml"
 DEFAULT_POSES = ROOT / "configs" / "ur747_bimanual" / "sysid" / "recorded_poses.npz"
+DEFAULT_POLICY_POSES = ROOT / "configs" / "ur747_bimanual" / "sysid" / "policy_poses.npz"
 
 
 @dataclass
@@ -253,6 +254,29 @@ def load_recorded_poses(side: str, arm: ArmModel, env: Envelope, limits: Limits,
     return np.asarray([x for x in q if not check_pose(x, arm, env, limits, surface_z)])
 
 
+def build_policy_poses(rollout_dirs: list[str | Path], out: str | Path = DEFAULT_POLICY_POSES,
+                       k: int = 1500) -> Path:
+    """Joint poses visited by simulated policy rollouts (r2s2r sys-id request format:
+    ``episodes/*.npz`` with ``q`` (T, 2, 6), arms ``[left, right]``). All poses are kept for
+    coverage reporting; only those inside the bounds are ever used as targets."""
+    import glob
+
+    arrays = {}
+    for a, side in enumerate(("left", "right")):
+        q = np.concatenate([np.load(f)["q"][:, a] for d in rollout_dirs
+                            for f in sorted(glob.glob(f"{d}/episodes/*.npz"))]).astype(np.float64)
+        arrays[side] = q[farthest_points(q, k)].astype(np.float32)
+    arrays["sources"] = np.array([str(Path(d).name) for d in rollout_dirs])
+    out = Path(out)
+    np.savez_compressed(out, **arrays)
+    return out
+
+
+def load_policy_poses(side: str, path: str | Path | None = None) -> np.ndarray | None:
+    path = Path(path or DEFAULT_POLICY_POSES)
+    return np.load(path)[side].astype(np.float64) if path.is_file() else None
+
+
 def _route(start, waypoints, arm, env, limits, surface_z, move_vel, home) -> list[np.ndarray] | None:
     """Validated min-jerk legs from ``start`` through ``waypoints``; via ``home`` if direct fails."""
     for via in ([], [home]):
@@ -275,19 +299,30 @@ def _route(start, waypoints, arm, env, limits, surface_z, move_vel, home) -> lis
 def static_holds(side: str, arm: ArmModel, env: Envelope, limits: Limits, n_poses: int = 40,
                  settle_s: float = 2.0, record_s: float = 2.0, move_vel: float = 0.25,
                  reverse_every: int = 3, overshoot: float = 0.04, surface_z: float = 0.0,
-                 poses_path: str | Path | None = None) -> Trajectory:
+                 poses_path: str | Path | None = None, policy_path: str | Path | None = None,
+                 policy_share: float = 0.4) -> Trajectory:
     """Hold ``n_poses`` recorded poses spread over the visited region (gravity, payload,
     static friction). Every ``reverse_every``-th pose is approached from the opposite side
     (overshoot, then back) to expose the static friction band."""
     home = np.clip(arm.home_q, env.q_lo, env.q_hi)
     library = load_recorded_poses(side, arm, env, limits, surface_z, poses_path)
     poses = library[farthest_points(library, 3 * n_poses, start=home)]
+    policy = load_policy_poses(side, policy_path)
+    if policy is not None:  # policy-visited poses inside the bounds first, up to policy_share
+        ok = np.asarray([x for x in policy if not check_pose(x, arm, env, limits, surface_z)])
+        if len(ok):
+            pick = ok[farthest_points(ok, max(1, int(policy_share * n_poses * 3)), start=home)]
+            poses = np.concatenate([pick, poses])
+    n_policy = len(poses) - 3 * n_poses
     order, rest, cur = [], list(range(len(poses))), home
     while rest:  # greedy nearest neighbour keeps moves short
         k = min(rest, key=lambda i: np.abs(poses[i] - cur).max())
         order.append(k)
         rest.remove(k)
         cur = poses[k]
+    # keep the policy share: policy poses are taken before teleop ones fill the remainder
+    quota = int(policy_share * n_poses) if n_policy > 0 else 0
+    order = [k for k in order if k < n_policy][:quota] + [k for k in order if k >= n_policy]
     b = _Builder(home)
     held = 0
     for k in order:
@@ -310,7 +345,8 @@ def static_holds(side: str, arm: ArmModel, env: Envelope, limits: Limits, n_pose
     for leg in back or [min_jerk(b.last, home, move_vel, limits.amax)]:
         b.add(leg, "move")
     return b.build(side, "static", {"n_poses": held, "settle_s": settle_s, "record_s": record_s,
-                                    "reverse_every": reverse_every, "poses": "recorded, farthest-point"})
+                                    "reverse_every": reverse_every, "policy_poses_offered": max(n_policy, 0),
+                                    "poses": "policy-visited (in bounds) then teleop-recorded, farthest-point"})
 
 
 def friction_sweeps(side: str, arm: ArmModel, env: Envelope, limits: Limits,
@@ -482,8 +518,8 @@ def condition(Y: np.ndarray, rank: int | None = None) -> tuple[float, int]:
 
 def excitation_set(side: str, arm: ArmModel, env: Envelope, limits: Limits, n_centers: int = 5,
                    candidates: int = 6, min_amplitude: float = 0.12, min_peak_speed: float = 0.3,
-                   surface_z: float = 0.0,
-                   poses_path: str | Path | None = None, **kw) -> list[Trajectory]:
+                   surface_z: float = 0.0, poses_path: str | Path | None = None,
+                   policy_path: str | Path | None = None, **kw) -> list[Trajectory]:
     """``n_centers`` excitations at recorded poses spread over the visited region (the first
     is home); per center the candidate seed with the best-conditioned inertial regressor.
     Centers whose excitation the envelope shrinks below ``min_amplitude`` (median over joints,
@@ -494,7 +530,16 @@ def excitation_set(side: str, arm: ArmModel, env: Envelope, limits: Limits, n_ce
     # centers need room to move: prefer recorded poses away from the joint-box faces
     margin = np.minimum(library - env.q_lo, env.q_hi - library).min(1)
     roomy = library[margin > 0.2] if (margin > 0.2).sum() >= 4 * n_centers else library
-    centers = [home] + list(roomy[farthest_points(roomy, 4 * n_centers, start=home)])
+    centers = [home]
+    policy = load_policy_poses(side, policy_path)
+    if policy is not None:  # policy-visited, in-bounds, roomy poses are tried first
+        ok = np.asarray([x for x in policy if not check_pose(x, arm, env, limits, surface_z)])
+        if len(ok):
+            m = np.minimum(ok - env.q_lo, env.q_hi - ok).min(1)
+            ok = ok[m > 0.15]
+            if len(ok):
+                centers += list(ok[farthest_points(ok, 2 * n_centers, start=home)])
+    centers += list(roomy[farthest_points(roomy, 4 * n_centers, start=home)])
     out, rank = [], None
     for center in centers:
         if len(out) >= n_centers:
@@ -524,7 +569,7 @@ def excitation_set(side: str, arm: ArmModel, env: Envelope, limits: Limits, n_ce
 
 
 def coverage(side: str, arm: ArmModel, trajs: list[Trajectory], poses_path: str | Path | None = None,
-             cell: float = 0.05) -> dict:
+             cell: float = 0.05, policy_path: str | Path | None = None) -> dict:
     """How much of the recorded region the trajectories visit (5 cm TCP cells, joint spans)
     and how well the whole set conditions the inertial regressor."""
     rec = np.load(poses_path or DEFAULT_POSES)[side].astype(np.float64)
@@ -537,7 +582,13 @@ def coverage(side: str, arm: ArmModel, trajs: list[Trajectory], poses_path: str 
     if ex:
         Y = np.concatenate([regressor(t.q[t.phase == t.phase_names.index("excite")], arm) for t in ex])
         cond, rank = condition(Y)
-    return {"tcp_cells_covered": round(len(rc & tc) / len(rc), 3), "tcp_cells_recorded": len(rc),
+    policy = load_policy_poses(side, policy_path)
+    pol = {}
+    if policy is not None:
+        pc = cells(policy)
+        pol = {"policy_tcp_cells": len(pc), "policy_tcp_cells_covered": round(len(pc & tc) / len(pc), 3),
+               "policy_tcp_cells_in_recorded": round(len(pc & rc) / len(pc), 3)}
+    return {**pol, "tcp_cells_covered": round(len(rc & tc) / len(rc), 3), "tcp_cells_recorded": len(rc),
             "joint_span_ratio": np.round((q.max(0) - q.min(0)) / span_rec, 2).tolist(),
             "excitation_regressor_condition": None if cond is None else round(cond, 1),
             "excitation_regressor_rank": None if cond is None else rank}
@@ -589,9 +640,14 @@ def main(argv=None) -> None:
     ap.add_argument("--centers", type=int, default=5, help="excitation centers per arm")
     ap.add_argument("--build-poses", metavar="EXPORT_DIR",
                     help="rebuild the recorded pose library from export_episode.py NPZs and exit")
+    ap.add_argument("--build-policy-poses", metavar="ROLLOUT_DIR", nargs="+",
+                    help="build policy_poses.npz from simulated policy rollout bundles and exit")
     a = ap.parse_args(argv)
     if a.build_poses:
         print(build_recorded_poses(a.build_poses, a.poses or DEFAULT_POSES))
+        return
+    if a.build_policy_poses:
+        print(build_policy_poses(a.build_policy_poses))
         return
     if not a.arm:
         ap.error("--arm is required")
