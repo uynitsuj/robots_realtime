@@ -80,7 +80,7 @@ def test_agent_plays_trajectory_on_fake_follower(tmp_path):
 
     path = _short_static(tmp_path)
     arm = FakeURRegisterArm("left", rig_yaml=FAKE_RIG, rate=500.0, max_joint_vel=1.0, max_lead=0.25,
-                            speed_fraction=1.0)
+                            speed_fraction=1.0, deadband=0.0)  # "rr servo": no vendor deadband
     agent = SysidTrajectoryAgent([path], "left", robot_name="f", settle_s=0.2, pause_s=0.2,
                                  rig_yaml=FAKE_RIG)
     records, errs = [], []

@@ -7,3 +7,4 @@ max_joint_vel: 1.0
 max_lead: 0.25
 align_joint_vel: 0.3
 speed_fraction: 1.0
+deadband: 0.0            # emulate "rr servo" (servoj): no vendor slow-target deadband

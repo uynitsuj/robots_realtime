@@ -108,13 +108,17 @@ class FakeURController:
         return True, "STOPPED"
 
 
-def FakeURRegisterArm(name: str, rig_yaml: str | None = None, **kwargs) -> URRegisterArm:
-    """A URRegisterArm on a FakeURController at the rig's home pose."""
+def FakeURRegisterArm(name: str, rig_yaml: str | None = None, deadband: float = 1.5e-4,
+                      **kwargs) -> URRegisterArm:
+    """A URRegisterArm on a FakeURController at the rig's home pose.
+
+    ``deadband`` emulates the vendor follower ignoring slow register changes; use 0
+    to emulate a servoj program ("rr servo")."""
     from robots_realtime.rig.dionysus import load_rig
 
     rig = load_rig(rig_yaml)
     arm = rig.arms[name]
-    fake = FakeURController(arm.home_q)
+    fake = FakeURController(arm.home_q, deadband=deadband)
     kwargs.setdefault("enable_motion", True)
     return URRegisterArm(arm.ip, name=name, rtde_factory=fake, rest=fake, rig_yaml=rig_yaml, **kwargs)
 

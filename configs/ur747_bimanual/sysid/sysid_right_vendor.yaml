@@ -1,5 +1,7 @@
 # SYS-ID of the vendor follower controller, right arm: same trajectories on "Default program".
-# Expect larger steady errors and the slow-target deadband: that is what this run measures.
+# Excitation trajectories only: below ~0.075 rad/s the vendor follower ignores register changes (its
+# slow-target deadband), so static holds and slow friction strokes would stall and abort. Expect larger
+# steady errors and lag than on "rr servo": that is what this run measures.
 #
 # Each trajectory is recorded as its own episode (follower joint_state with the full RTDE field list,
 # agent state with the commands as sent). Generate the trajectories first (deterministic, validated
@@ -24,10 +26,8 @@ nodes:
       approach_vel: 0.2
       settle_s: 2.0
       pause_s: 3.0
-      max_track_error: 0.2
+      max_track_error: 0.3
       trajectories:
-        - sysid/trajectories/right_static.npz
-        - sysid/trajectories/right_friction.npz
         - sysid/trajectories/right_excite_s0.npz
         - sysid/trajectories/right_excite_s1.npz
         - sysid/trajectories/right_excite_s2.npz
