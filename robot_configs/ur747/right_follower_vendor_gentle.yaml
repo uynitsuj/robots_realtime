@@ -14,6 +14,8 @@ program: Default program
 rate: 500.0
 goal_time: 0.007
 max_joint_vel: 1.0
+align_joint_vel: 0.2         # rad/s until within align_tolerance of the leader (Scale: reconciliate)
+align_tolerance: 0.05
 max_lead: 0.10
 speed_fraction: 0.30
 play_on_start: true

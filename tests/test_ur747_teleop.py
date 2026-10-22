@@ -154,3 +154,43 @@ def test_readonly_profiles_never_write(path):
     assert cfg.get("enable_motion", False) is False
     assert cfg.get("manage_program", False) is False
     assert cfg.get("haptic_feedback", False) is False
+
+
+def test_follower_aligns_slowly_then_tracks_fast_and_realigns_after_stale():
+    from robots_realtime.rig.dionysus import load_rig
+    from robots_realtime.robots.ur_register_arm import URRegisterArm
+
+    rig = load_rig(FAKE_RIG)
+    q0 = rig.arms["left"].home_q
+    fake = FakeURController(q0, rate=500.0)
+    fake.track = q0.copy()
+    arm = URRegisterArm(rig.arms["left"].ip, name="left", rtde_factory=fake, rest=fake, rig_yaml="",
+                        enable_motion=True, rate=500.0, max_joint_vel=3.0, max_lead=0.35,
+                        align_joint_vel=0.3, align_tolerance=0.05, cmd_timeout_s=0.1, speed_fraction=1.0)
+    try:
+        target = np.concatenate([q0 + np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.5]), [1.0]])
+        sp_prev, t_prev, speeds = None, None, []
+        t_start = time.time()
+        t_end = t_start + 4.0
+        while time.time() < t_end:
+            arm.command_joint_pos(target)
+            obs = arm.get_observations()
+            if sp_prev is not None and not obs["aligned"][0]:
+                dt = obs["state_t"][0] - t_prev
+                if dt > 0:
+                    speeds.append(np.abs(obs["setpoint"] - sp_prev).max() / dt)
+            sp_prev, t_prev = obs["setpoint"].copy(), obs["state_t"][0]
+            if obs["aligned"][0]:
+                break
+            time.sleep(0.004)
+        took = time.time() - t_start
+        assert arm.get_observations()["aligned"][0] == 1
+        # 0.45 rad to cover at <= 0.3 rad/s: at least 1.5 s (3 rad/s uncapped would take 0.15 s).
+        assert took > 1.4
+        # setpoint and state_t are read from neighbouring ticks, so single samples jitter.
+        assert speeds and np.percentile(speeds, 95) < 0.3 * 1.1
+        # A stale gap re-arms the slow phase.
+        time.sleep(0.25)
+        assert arm.get_observations()["aligned"][0] == 0
+    finally:
+        arm.stop()

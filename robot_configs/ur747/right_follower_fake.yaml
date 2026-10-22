@@ -5,5 +5,7 @@ rig_yaml: configs/ur747_bimanual/rig_fake.yaml
 rate: 500.0
 goal_time: 0.007
 max_joint_vel: 3.0
+align_joint_vel: 0.3         # rad/s until within align_tolerance of the leader (Scale: reconciliate)
+align_tolerance: 0.05
 max_lead: 0.35
 speed_fraction: 1.0

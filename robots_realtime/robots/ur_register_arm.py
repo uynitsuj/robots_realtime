@@ -120,6 +120,11 @@ class URRegisterArm:
         goal_time: Register-30 ramp time [s]; default one control period.
         max_joint_vel: Setpoint speed cap [rad/s] per joint.
         max_lead: Max |setpoint - actual_q| per joint [rad] (no wind-up when the arm lags).
+        align_joint_vel: Speed cap [rad/s] while aligning onto the commanded pose: after
+            bring-up and after every stale-command hold, until every joint is within
+            ``align_tolerance`` of the target (recording_studio's ``reconciliate``
+            start). ``None`` disables the phase (``max_joint_vel`` applies throughout).
+        align_tolerance: Per-joint distance [rad] that ends the alignment phase.
         speed_fraction: Speed slider written while driving (0..1).
         restore_speed_fraction: Speed slider written on hand-back (found value 0.30).
         cmd_timeout_s: A target older than this is replaced by "hold here".
@@ -154,6 +159,8 @@ class URRegisterArm:
         goal_time: float | None = None,
         max_joint_vel: float = 0.25,
         max_lead: float = 0.05,
+        align_joint_vel: float | None = None,
+        align_tolerance: float = 0.05,
         speed_fraction: float = 0.10,
         restore_speed_fraction: float = 0.30,
         cmd_timeout_s: float = 0.3,
@@ -180,6 +187,9 @@ class URRegisterArm:
         self.goal_time = float(goal_time) if goal_time is not None else self.period
         self.max_step = float(max_joint_vel) * self.period
         self.max_lead = float(max_lead)
+        self.align_step = None if align_joint_vel is None else float(align_joint_vel) * self.period
+        self.align_tolerance = float(align_tolerance)
+        self._aligned = self.align_step is None
         if not (0.0 < speed_fraction <= 1.0) or not (0.0 < restore_speed_fraction <= 1.0):
             raise ValueError("speed fractions must be in (0, 1]")
         self.speed_fraction = float(speed_fraction)
@@ -231,7 +241,7 @@ class URRegisterArm:
         self._driving = False
         self._stop_evt = threading.Event()
         self._thread: threading.Thread | None = None
-        self._stats = {"ticks": 0, "clamped": 0, "floor_holds": 0, "stale_holds": 0}
+        self._stats = {"ticks": 0, "clamped": 0, "floor_holds": 0, "stale_holds": 0, "alignments": 0}
         self._closed = False
 
         self._connect()
@@ -439,6 +449,8 @@ class URRegisterArm:
             return q.copy()  # HOLD where the arm is
         if now - self._target_t > self.cmd_timeout_s:
             self._stats["stale_holds"] += 1
+            if self.align_step is not None:
+                self._aligned = False  # re-align slowly when commands resume
             return sp.copy()
         goal = tgt[:N_JOINTS].copy()
         for j in self.wrap_joints:
@@ -446,7 +458,12 @@ class URRegisterArm:
         if np.any(goal < self.joint_lower) or np.any(goal > self.joint_upper):
             self._trip(f"{self.name}: target outside joint limits: {np.round(goal, 3).tolist()}")
             return q.copy()
-        step = np.clip(goal - sp, -self.max_step, self.max_step)
+        if not self._aligned and float(np.abs(goal - q).max()) < self.align_tolerance:
+            self._aligned = True
+            self._stats["alignments"] += 1
+            log.info("[%s] aligned onto the commanded pose", self.name)
+        cap = self.max_step if self._aligned else min(self.max_step, self.align_step)
+        step = np.clip(goal - sp, -cap, cap)
         if np.any(np.abs(step) < np.abs(goal - sp) - 1e-12):
             self._stats["clamped"] += 1
         nxt = sp + step
@@ -539,6 +556,7 @@ class URRegisterArm:
             "safety_mode": np.array([s["safety_mode"]]),
             "runtime_state": np.array([s["runtime_state"]]),
             "driving": np.array([1 if (self._driving and latched is None) else 0]),
+            "aligned": np.array([1 if self._aligned else 0]),
             "latched": np.array([0 if latched is None else 1]),
             "state_t": np.array([s["t"]]),
             "tcp_force": s["tcp_force"].copy(),  # RTDE actual_TCP_force: TCP wrench, base frame

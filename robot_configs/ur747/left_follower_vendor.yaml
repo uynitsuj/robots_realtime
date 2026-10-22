@@ -16,6 +16,8 @@ program: Default program
 rate: 500.0
 goal_time: 0.007             # register 30: ramp time to each new target (recording_studio: 0.007)
 max_joint_vel: 3.0           # rad/s setpoint cap; the vendor program itself has none
+align_joint_vel: 0.3         # rad/s until within align_tolerance of the leader (Scale: reconciliate)
+align_tolerance: 0.05
 max_lead: 0.35               # rad, setpoint never leads actual_q by more
 speed_fraction: 0.30         # speed slider while driving; direct_torque is probably not scaled by it
 play_on_start: true
