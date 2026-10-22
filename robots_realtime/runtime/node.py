@@ -408,6 +408,22 @@ def _host_worker(
     ctrl_thread = threading.Thread(target=_watch_ctrl, daemon=True, name="CtrlWatcher")
     ctrl_thread.start()
 
+    # SIGTERM reaches every node (launchers signal the whole process group).
+    # Stop the loop instead of dying, so ``cleanup()`` runs: hardware drivers
+    # rely on it to hand the robot back (e.g. URRegisterArm stops the program
+    # and restores the speed slider).
+    import signal as _signal
+
+    def _graceful(*_):
+        node.stop()
+        stop_event.set()
+        start_event.set()
+
+    try:
+        _signal.signal(_signal.SIGTERM, _graceful)
+    except (OSError, ValueError):
+        pass
+
     # Block main thread until START arrives
     start_event.wait()
 
@@ -486,7 +502,9 @@ class ProcessHost:
         self._ctrl.send(b"RESUME")
         self._ctrl.recv()
 
-    def stop(self, timeout: float = 3.0) -> None:
+    def stop(self, timeout: float = 8.0) -> None:
+        # 8 s: a robot driver's cleanup (hold, REST program stop, neutral
+        # registers) must finish before the node is killed.
         if self._ctrl is not None:
             self._ctrl.setsockopt(zmq.RCVTIMEO, 2000)  # 2 s receive timeout
             self._ctrl.send(_CTRL_STOP)

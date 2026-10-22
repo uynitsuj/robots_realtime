@@ -1,0 +1,35 @@
+schema_version: 1
+calibration_type: eye_in_hand
+created_utc: '2026-08-01T02:15:22.979719+00:00'
+source_dataset: /home/lab/uksang/calibration/datasets/run_002
+opencv_method: andreff
+sample_count: 84
+rotation_span_deg: 179.3604897049629
+metrics:
+  translation_rms_m: 0.0011734328994058604
+  translation_max_m: 0.003035652606335704
+  rotation_rms_deg: 0.20414558729707277
+  rotation_max_deg: 0.5135744366788535
+transforms:
+- parent_frame: right_follower_arm_tool0
+  child_frame: right_wrist_camera_link
+  translation:
+    x: -0.008761874006764583
+    y: -0.06756942130033997
+    z: 0.04521031839092413
+  rotation:
+    x: 0.4074960522100158
+    y: -0.4091409653825297
+    z: 0.5789458332277527
+    w: 0.5756495114801428
+- parent_frame: checkerboard
+  child_frame: right_follower_arm_base
+  translation:
+    x: 0.5123341723576023
+    y: 0.47921043929153356
+    z: 0.32814372312443263
+  rotation:
+    x: -0.3791996936414814
+    y: 0.0033650342638076036
+    z: -0.00858368886674672
+    w: 0.9252689280269002

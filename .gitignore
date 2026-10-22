@@ -13,3 +13,5 @@ __pycache__/
 .venv/
 .ruff_cache/
 recordings/
+# rr-session's own logs
+Log/

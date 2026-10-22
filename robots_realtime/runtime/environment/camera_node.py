@@ -37,11 +37,13 @@ _CAMERA_DRIVER_REGISTRY: dict[str, str] = {
     "ZedCamera":        "robots_realtime.sensors.cameras.zed_camera:ZedCamera",
     "OpenCVCamera":     "robots_realtime.sensors.cameras.opencv_camera:OpencvCamera",
     "RealSenseCamera":  "robots_realtime.sensors.cameras.realsense_camera:RealSenseCamera",
+    "OrbbecCamera":     "robots_realtime.sensors.cameras.orbbec_camera:OrbbecCamera",
 }
 
 _NODE_ONLY_KEYS = {
     "name", "type", "poll_freq",
     "publish_resize", "publish_resize_mode", "publish_fov_crop",
+    "publish_freq", "writer",
 }
 
 
@@ -135,6 +137,7 @@ class CameraNode(Node):
         driver: CameraDriver | None = None,
         name: str = "camera",
         poll_freq: float | None = None,
+        publish_freq: float | None = None,
         writer=None,
         _driver_spec: dict | None = None,
         publish_resize: tuple[int, int] | list[int] | None = None,
@@ -142,6 +145,9 @@ class CameraNode(Node):
         publish_fov_crop: float = 1.0,
         **kwargs,
     ) -> None:
+        # publish_freq caps the bus rate only; the writer still records every frame.
+        if publish_freq is not None:
+            self.publish_freq = publish_freq
         super().__init__(name=name, writer=writer, **kwargs)
         self._driver = driver
         self._driver_spec = _driver_spec
@@ -186,7 +192,10 @@ class CameraNode(Node):
 
         # Depth: support both other_sensors["depth"] (standard) and the
         # dynamic depth_data attribute that ZedCamera sets directly.
-        depth = (data.other_sensors or {}).get("depth") or getattr(data, "depth_data", None)
+        # (No ``or`` chaining: truth-testing an ndarray raises.)
+        depth = (data.other_sensors or {}).get("depth")
+        if depth is None:
+            depth = getattr(data, "depth_data", None)
         if depth is not None:
             msg["depth_data"] = depth
 
@@ -243,6 +252,7 @@ class CameraNode(Node):
             "publish_resize": params.get("publish_resize"),
             "publish_resize_mode": params.get("publish_resize_mode", "center_crop"),
             "publish_fov_crop": params.get("publish_fov_crop", 1.0),
+            "publish_freq": params.get("publish_freq"),
         }
         if "driver" in params:
             driver_kwargs = {k: v for k, v in params.items() if k not in _NODE_ONLY_KEYS}

@@ -102,10 +102,14 @@ class RobotNode(Node):
         ramp_duration_s: float = 1.5,
         resume_gap_s: float = 0.2,
         debug_trace: bool | str | None = None,
+        cmd_timeout_s: float | None = None,
         writer=None,
         **kwargs,
     ) -> None:
         self.subscribed_topics = [cmd_topic] if cmd_topic else []
+        # Commands older than this are not forwarded (the robot then holds on
+        # its own command timeout). None keeps the old re-send-forever behaviour.
+        self._cmd_timeout_s = cmd_timeout_s
         # Explicitly set poll_freq and subscriber_driven before calling super().__init__
         if poll_freq is not None:
             self.poll_freq = poll_freq
@@ -253,6 +257,9 @@ class RobotNode(Node):
         if self._cmd_topic:
             cmd = self.get_latest(self._cmd_topic)
             cmd_ts = self.get_timestamp(self._cmd_topic) if cmd is not None else None
+            if cmd is not None and self._cmd_timeout_s is not None:
+                if cmd_ts is None or ts - float(cmd_ts) > self._cmd_timeout_s:
+                    cmd = None
             if cmd is not None:
                 # End-to-end latency from the agent's publish timestamp to this
                 # poll consuming the command. Captures CAN freshness + publish +
@@ -369,4 +376,6 @@ class RobotNode(Node):
         ):
             if key in params:
                 kwargs[key] = params[key]
+        if "cmd_timeout_s" in params:
+            kwargs["cmd_timeout_s"] = params["cmd_timeout_s"]
         return kwargs

@@ -1,8 +1,13 @@
 from typing import Dict, List, Optional
 
 import numpy as np
-from i2rt.robots.robot import Robot
-from i2rt.robots.utils import JointMapper
+
+try:
+    from i2rt.robots.robot import Robot
+    from i2rt.robots.utils import JointMapper
+except ImportError:  # i2rt is only needed by the YAM drivers; the rest is duck-typed.
+    Robot = object  # type: ignore[assignment,misc]
+    JointMapper = None  # type: ignore[assignment,misc]
 
 # RPC Method Serialization Requirements.
 ROBOT_PROTOCOL_METHODS = {
@@ -75,6 +80,14 @@ class ConcatenatedRobot(Robot):
         assert self._remapper is None, "Remapper is not supported for command_joint_state"
         for robot, state in zip(self._robots, np.split(joint_state, self.per_robot_index), strict=False):  # type: ignore
             robot.command_joint_state(state)
+
+    def stop(self) -> None:
+        for robot in self._robots:
+            for name in ("stop", "close"):
+                fn = getattr(robot, name, None)
+                if callable(fn):
+                    fn()
+                    break
 
     def get_observations(self) -> Dict[str, np.ndarray]:
         obs = [robot.get_observations() for robot in self._robots]

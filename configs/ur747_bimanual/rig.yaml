@@ -1,0 +1,70 @@
+# dionysus bimanual UR5e rig — single source of truth for frames, IPs and limits.
+#
+# World frame = the uksang calibration "checkerboard" frame (origin at the first
+# internal board corner, +Z up from the table). Calibration solved 2026-08-01
+# (datasets/run_002); re-run the uksang calibration if a camera or arm mount moved.
+#
+# arm_id: arm index 0..N-1 (right = 0, left = 1).
+
+surface_z: 0.0            # table top in world [m]; refine from a depth plane fit (rig_snapshot --plane)
+
+arms:
+  right:
+    arm_id: 0
+    ip: 192.168.0.13
+    calib: calib/right_follower_arm_handeye.yaml
+    base_frame: right_follower_arm_base
+    # flange -> Robotiq 2F-85 pinch point, flange frame: 155.8 mm, the station's
+    # measured value (2026-10-20; 174.6 mm from an earlier fit sat 14 mm beyond the real
+    # fingertips). The driver cross-checks the controller's RTDE tcp_offset.
+    tcp_offset: [-0.0021, 0.0003, 0.1558]
+    home_q: [-2.50619, -1.76457, -1.82408, -1.67229, 0.92316, 0.80128]
+    home_gripper: 0.0118
+    joint_limits: [-6.2831853, 6.2831853]
+  left:
+    arm_id: 1
+    ip: 192.168.0.11
+    calib: calib/left_follower_arm_handeye.yaml
+    base_frame: left_follower_arm_base
+    tcp_offset: [-0.0021, 0.0003, 0.1558]
+    home_q: [2.52962, -1.43099, 1.82276, -1.46117, -0.95871, -0.82522]
+    home_gripper: 0.0118
+    joint_limits: [-6.2831853, 6.2831853]
+
+cameras:
+  top:
+    serial: CV3H46000036
+    mount: fixed
+    calib: calib/top_camera.yaml
+    link_frame: top_camera_link
+  bottom:
+    serial: CV3H4600001A
+    mount: fixed
+    calib: calib/bottom_camera.yaml
+    link_frame: bottom_camera_link
+  right_wrist:
+    serial: CV3H46000012
+    mount: right
+    calib: calib/right_follower_arm_handeye.yaml
+    parent_frame: right_follower_arm_tool0
+    link_frame: right_wrist_camera_link
+  left_wrist:
+    serial: CV3H4600008Z
+    mount: left
+    calib: calib/left_follower_arm_handeye.yaml
+    parent_frame: left_follower_arm_tool0
+    link_frame: left_wrist_camera_link
+
+# TCP workspace box in world [m].
+# Set conservatively around the table; widen only after checking in viser.
+# Home TCPs (calibrated FK): right (0.01, 0.61, 0.45), left (0.00, -0.04, 0.45);
+# arm bases at x~0.5; the top camera looks at ~(0.0, 0.28, 0.0).
+workspace:
+  min: [-0.40, -0.25, 0.0]
+  max: [0.45, 0.85, 0.70]
+
+# Clearance gates (metres); the follower driver enforces the floor terms every tick.
+clearance:
+  tcp_above_surface: 0.0       # TCP (pinch point) never below surface_z + this; the foam mat top is 1-8 mm up
+  links_above_surface: 0.04    # DH frame origins (wrists, flange) above surface_z + this
+  inter_arm: 0.12              # min distance between the two arms' link segments

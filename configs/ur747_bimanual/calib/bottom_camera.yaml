@@ -1,0 +1,22 @@
+schema_version: 1
+calibration_type: fixed_camera
+created_utc: '2026-08-01T02:15:22.508233+00:00'
+source_dataset: /home/lab/uksang/calibration/datasets/run_002
+sample_count: 36
+metrics:
+  translation_rms_m: 0.000899348135158386
+  translation_max_m: 0.002892541080014133
+  rotation_rms_deg: 0.09086509523552053
+  rotation_max_deg: 0.2574218717890754
+transforms:
+- parent_frame: checkerboard
+  child_frame: bottom_camera_link
+  translation:
+    x: 0.3603027912656982
+    y: 0.27420541904249107
+    z: 0.28140195703889503
+  rotation:
+    x: -0.19963432823319632
+    y: 0.003325179611550433
+    z: 0.9797365739397941
+    w: 0.015853197032329347

@@ -18,13 +18,22 @@ import signal
 import sys
 
 
+_SESSION = None
+_HARD_KILL_AFTER_S = 10.0
+
+
 def _force_exit(sig, frame):
-    """SIGTERM handler: give session.stop() 3 s then hard-kill the process group."""
+    """SIGTERM handler: stop the session in order (nodes run their cleanup —
+    robot drivers hand the hardware back), then hard-kill the process group
+    if that has not finished within ``_HARD_KILL_AFTER_S``."""
     import threading
     import time
 
+    if _SESSION is not None:
+        _SESSION._stop_event.set()  # Session.wait() returns -> Session.stop()
+
     def _kill_group():
-        time.sleep(3.0)
+        time.sleep(_HARD_KILL_AFTER_S)
         try:
             os.killpg(os.getpgid(0), signal.SIGKILL)
         except Exception:
@@ -100,6 +109,8 @@ def main() -> None:
         from pathlib import Path
         session._save_root = Path(args.save_root)
 
+    global _SESSION
+    _SESSION = session
     session.start()
 
     if args.no_tui:

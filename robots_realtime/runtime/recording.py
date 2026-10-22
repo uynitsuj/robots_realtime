@@ -5,6 +5,7 @@ Each node owns its writer; recording is started/stopped via start_recording() / 
 Writers:
     McapWriter     — MCAP with protobuf (RobotState/GripperState) or JSON fallback
     AsyncMp4Writer — per-topic MP4 with background encoder thread + timestamp sidecar
+    RgbdWriter     — AsyncMp4Writer + lossless 16-bit depth chunks + camera_info.json
     NullWriter     — no-op (for nodes that manage their own multi-file writers)
 """
 
@@ -182,9 +183,9 @@ class McapWriter(Writer):
     def _write_robot_state(self, topic: str, data: dict, now_ns: int) -> None:
         msg = self._RobotState()
         # Map fields
-        jp = data.get("joint_pos") or data.get("position")
-        jv = data.get("joint_vel") or data.get("velocity")
-        je = data.get("joint_eff") or data.get("torque")
+        jp = _first(data, "joint_pos", "position")
+        jv = _first(data, "joint_vel", "velocity")
+        je = _first(data, "joint_eff", "torque")
         if jp is not None:
             msg.position[:] = _to_float_list(jp)
         if jv is not None:
@@ -202,10 +203,10 @@ class McapWriter(Writer):
 
     def _write_gripper_state(self, data: dict, now_ns: int) -> None:
         msg = self._GripperState()
-        gp = data.get("gripper_pos") or data.get("position")
+        gp = _first(data, "gripper_pos", "position")
         if gp is not None:
             try:
-                msg.position = float(gp)
+                msg.position = float(_to_float_list(gp)[0] if hasattr(gp, "__len__") else gp)
             except (TypeError, ValueError):
                 pass
         proto_topic = f"/{self._node_name}-gripper-state"
@@ -236,6 +237,16 @@ class McapWriter(Writer):
 
     def __exit__(self, *_) -> None:
         self.close()
+
+
+def _first(data: dict, *keys):
+    """First present (non-None) value among ``keys`` — no truth-testing, so
+    numpy arrays are safe (``a or b`` raises on a multi-element ndarray)."""
+    for k in keys:
+        v = data.get(k)
+        if v is not None:
+            return v
+    return None
 
 
 def _to_float_list(val) -> list[float]:
@@ -380,6 +391,21 @@ class AsyncMp4Writer(Writer):
         self._ensure_topic(topic)
         self._queues[topic].put((frame, timestamp))
 
+    @staticmethod
+    def _frame_of(data: dict):
+        """``data["frame"]`` (sim nodes) or the colour image of a CameraNode
+        payload (``data["images"]["rgb"|"left_rgb"|first]``)."""
+        frame = data.get("frame")
+        if frame is not None:
+            return frame
+        images = data.get("images")
+        if not isinstance(images, dict) or not images:
+            return None
+        for key in ("rgb", "left_rgb"):
+            if images.get(key) is not None:
+                return images[key]
+        return next(iter(images.values()))
+
     def close(self) -> str:
         if not self._open:
             return str(self._save_dir or "")
@@ -435,6 +461,104 @@ class AsyncMp4Writer(Writer):
                 writer.close()
             except Exception:
                 pass
+
+
+# ── RgbdWriter ────────────────────────────────────────────────────────────────
+
+
+class RgbdWriter(AsyncMp4Writer):
+    """RGB as MP4 (via AsyncMp4Writer) plus lossless depth and the camera model.
+
+    Files (``{node}`` = camera node name):
+        {node}-images-rgb.mp4, {node}-rgb-timestamp.npy    colour (H.264) + times
+        {node}-depth-00000.npz, ...                        uint16 depth [mm] chunks:
+                                                           ``depth`` (N,H,W), ``t`` (N,)
+        {node}-camera_info.json                            K, distortion, size,
+                                                           extrinsics, parent frame
+
+    Depth is quantised to millimetres (uint16) — exact for the sensor, ~4x
+    smaller than float32 metres — and written by a background thread in chunks
+    of ``chunk`` frames so the camera loop never blocks on compression.
+    """
+
+    def __init__(self, fps: float = 30.0, crf: int = 18, chunk: int = 30) -> None:
+        super().__init__(fps=fps, crf=crf)
+        self._chunk = int(chunk)
+        self._depth_buf: list = []
+        self._depth_ts: list[float] = []
+        self._depth_idx = 0
+        self._depth_q: queue.Queue | None = None
+        self._depth_thread: threading.Thread | None = None
+        self._info_written = False
+
+    def open(self, save_dir: str, node_name: str) -> None:
+        super().open(save_dir, node_name)
+        self._depth_buf, self._depth_ts, self._depth_idx = [], [], 0
+        self._info_written = False
+        self._depth_q = queue.Queue()
+        self._depth_thread = threading.Thread(
+            target=self._depth_loop, daemon=True, name=f"DepthW-{node_name}",
+        )
+        self._depth_thread.start()
+
+    def write(self, topic: str, timestamp: float, data: dict) -> None:
+        if not self._open:
+            return
+        super().write(topic, timestamp, data)
+        if not self._info_written:
+            self._write_info(data)
+        depth = data.get("depth_data")
+        if depth is None:
+            return
+        import numpy as np
+
+        mm = np.clip(np.nan_to_num(np.asarray(depth, dtype=np.float32)) * 1000.0, 0, 65535).astype(np.uint16)
+        self._depth_buf.append(mm)
+        self._depth_ts.append(float(timestamp))
+        if len(self._depth_buf) >= self._chunk:
+            self._flush_depth()
+
+    def _flush_depth(self) -> None:
+        if not self._depth_buf or self._depth_q is None:
+            return
+        self._depth_q.put((self._depth_idx, self._depth_buf, self._depth_ts))
+        self._depth_idx += 1
+        self._depth_buf, self._depth_ts = [], []
+
+    def _depth_loop(self) -> None:
+        import numpy as np
+
+        assert self._depth_q is not None
+        while True:
+            item = self._depth_q.get()
+            if item is _MP4_SENTINEL:
+                break
+            idx, frames, ts = item
+            path = self._save_dir / f"{self._node_name}-depth-{idx:05d}.npz"
+            np.savez_compressed(str(path), depth=np.stack(frames), t=np.asarray(ts, dtype=np.float64))
+
+    def _write_info(self, data: dict) -> None:
+        intr = data.get("intrinsics")
+        if intr is None:
+            return
+        info = {"node": self._node_name, "depth_units": "mm (uint16), 0 = invalid",
+                "intrinsics": intr, "extrinsics": data.get("extrinsics")}
+        rgb = self._frame_of(data)
+        if rgb is not None:
+            info["rgb_shape"] = list(rgb.shape)
+        path = self._save_dir / f"{self._node_name}-camera_info.json"
+        path.write_text(_serialize_json(info).decode())
+        self._info_written = True
+
+    def close(self) -> str:
+        if not self._open:
+            return str(self._save_dir or "")
+        self._flush_depth()
+        if self._depth_q is not None:
+            self._depth_q.put(_MP4_SENTINEL)
+        if self._depth_thread is not None:
+            self._depth_thread.join(timeout=30.0)
+        return super().close()
 
 
 # ── NullWriter ────────────────────────────────────────────────────────────────
