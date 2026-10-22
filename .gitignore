@@ -15,3 +15,5 @@ __pycache__/
 recordings/
 # rr-session's own logs
 Log/
+# generated sys-id trajectories (rr-ur-sysid-traj)
+/sysid/

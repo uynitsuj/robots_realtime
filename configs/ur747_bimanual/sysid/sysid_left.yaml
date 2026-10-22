@@ -1,0 +1,48 @@
+# SYS-ID, left follower on "rr servo": static holds, friction sweeps, 4 excitations (last held out).
+# The other arm is not touched. Someone on the e-stop.
+#
+# Each trajectory is recorded as its own episode (follower joint_state with the full RTDE field list,
+# agent state with the commands as sent). Generate the trajectories first (deterministic, validated
+# against configs/ur747_bimanual/sysid/envelope.yaml):
+#   .venv/bin/rr-ur-sysid-traj --arm left --out sysid/trajectories
+# Comment out entries to run a subset. Start with the arm near its rig home pose (the approach is
+# refused if the arm starts outside the envelope).
+#   uv run rr-session configs/ur747_bimanual/sysid/sysid_left.yaml
+version: "1"
+
+session:
+  save_root: recordings/ur747_sysid
+  record_topic: sysid_left/record
+
+nodes:
+  - type: AgentNode
+    name: sysid_left
+    agent_class: robots_realtime.agents.sysid.trajectory_agent:SysidTrajectoryAgent
+    agent_kwargs:
+      arm: left
+      robot_name: arm_left_follower
+      approach_vel: 0.2
+      settle_s: 2.0
+      pause_s: 3.0
+      max_track_error: 0.15
+      trajectories:
+        - sysid/trajectories/left_static.npz
+        - sysid/trajectories/left_friction.npz
+        - sysid/trajectories/left_excite_s0.npz
+        - sysid/trajectories/left_excite_s1.npz
+        - sysid/trajectories/left_excite_s2.npz
+        - sysid/trajectories/left_excite_s3.npz
+    state_topics:
+      arm_left_follower: arm_left_follower/joint_state
+    loop_mode: fixed_rate
+    poll_freq: 500
+
+  - type: RobotNode
+    name: arm_left_follower
+    robot_config: robot_configs/ur747/left_follower_sysid_rr_servo.yaml
+    cmd_topic: sysid_left/joint_pos
+    cmd_timeout_s: 0.1
+    poll_freq: 500
+    startup_joint_pos: null
+    shutdown_joint_pos: null
+    ramp_duration_s: 1.5

@@ -1,0 +1,9 @@
+# SIMULATED right follower for sys-id rehearsals.
+_target_: robots_realtime.robots.fake_ur.FakeURRegisterArm
+name: right
+rig_yaml: configs/ur747_bimanual/rig_fake.yaml
+rate: 500.0
+max_joint_vel: 1.0
+max_lead: 0.25
+align_joint_vel: 0.3
+speed_fraction: 1.0

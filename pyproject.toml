@@ -48,6 +48,7 @@ rr-replay  = "robots_realtime.rr_replay_cli:main"
 rr-ur-stop = "robots_realtime.rig.stop:main"
 rr-ur-snapshot = "robots_realtime.tools.rig_snapshot:main"
 rr-ur-servo-program = "robots_realtime.rig.servo_program:main"
+rr-ur-sysid-traj = "robots_realtime.sysid.trajectories:main"
 
 [project.optional-dependencies]
 sensors = [

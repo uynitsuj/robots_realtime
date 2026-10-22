@@ -1,0 +1,21 @@
+# left UR5e follower (192.168.0.11) — SYS-ID on "rr servo" (servoj, known gain/lookahead), full RTDE field
+# list at 500 Hz. Build the program with --vmax 1.0 (trajectories peak at 0.8 rad/s), upload, load it on the
+# pendant (STOPPED, Remote). Load "Default program" back afterwards.
+_target_: robots_realtime.robots.ur_register_arm.URRegisterArm
+ip: "192.168.0.11"
+name: left
+enable_motion: true
+rate: 500.0
+joint_lower: [-6.2831853, -6.2831853, -6.2831853, -6.2831853, -6.2831853, -6.2831853]
+joint_upper: [6.2831853, 6.2831853, 6.2831853, 6.2831853, 6.2831853, 6.2831853]
+cmd_timeout_s: 0.1
+max_joint_vel: 1.0            # sys-id trajectories peak at 0.8 rad/s
+max_lead: 0.25
+align_joint_vel: 0.3
+align_tolerance: 0.05
+restore_speed_fraction: 0.30
+play_on_start: true
+allow_attach_playing: false
+extra_outputs: [timestamp, target_q, target_qd, target_qdd, target_current, target_moment, actual_current, actual_current_as_torque, actual_current_window, joint_control_output, joint_temperatures, actual_joint_voltage, joint_mode, ft_raw_wrench, actual_tool_accelerometer, payload, payload_cog, speed_scaling, target_speed_fraction, safety_status]
+program: rr servo
+speed_fraction: 1.0           # servoj is scaled by the slider: keep 1.0 so trajectories run as designed
