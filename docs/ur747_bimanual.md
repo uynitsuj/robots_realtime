@@ -6,8 +6,8 @@ Robotiq 2F-85 grippers, four Orbbec Gemini 305g cameras over GMSL2. The hardware
 ones Scale AI's recording_studio (trainmybot v3.19.1) and UR's AI Trainer bundle use, so data from
 both stacks is directly comparable.
 
-**Status:** built and tested offline (fake controllers). No session in this branch has driven the
-real arms yet. Run `monitor_readonly*.yaml` first, then a gentle teleop with someone at the e-stop.
+**Status:** built and tested offline (fake controllers); the cameras were streamed live with these
+settings (2026-10-22). No session in this branch has driven the real arms yet. Run `monitor_readonly*.yaml` first, then a gentle teleop with someone at the e-stop.
 
 ## What matches recording_studio
 
@@ -73,6 +73,7 @@ Runtime knobs (both programs):
 | `goal_time` | reg 30 ramp time per target [s] (vendor only; Scale 0.007) |
 | `max_joint_vel` | setpoint speed cap [rad/s] |
 | `max_lead` | max setpoint - actual_q per joint [rad] |
+| `align_joint_vel`, `align_tolerance` | slow alignment onto the commanded pose at start and after stale gaps (recording_studio's `reconciliate`) |
 | `speed_fraction` / `restore_speed_fraction` | speed slider while driving / on hand-back (scales servoj, probably not direct_torque) |
 | `cmd_timeout_s` | older commands become "hold here" |
 | `joint_lower` / `joint_upper` | a target outside latches a stop |
@@ -82,7 +83,7 @@ Runtime knobs (both programs):
 | `extra_outputs` | any RTDE output fields, published as `rtde_<field>` (configs stream `target_q/qd/qdd`, `target_current`, `target_moment`, `actual_current`, `joint_control_output`, `joint_temperatures`, `speed_scaling`, `target_speed_fraction`) |
 
 Observations (`arm_<side>_follower/joint_state`): `joint_pos` (6 + gripper open fraction),
-`joint_vel`, `tcp_pose`, `tcp_force` (RTDE `actual_TCP_force`), `flange_wrench` (vendor, while
+`joint_vel`, `aligned`, `tcp_pose`, `tcp_force` (RTDE `actual_TCP_force`), `flange_wrench` (vendor, while
 PLAYING) or `servo_reference` (rr servo), `setpoint`, `gripper_raw`, `safety_mode`,
 `runtime_state`, `driving`, `latched`, `rtde_*`.
 
@@ -102,6 +103,53 @@ The leader's admittance parameters (mass, damping, deadband) are inside the vend
 adjustable here. A custom leader program (e.g. alvin's "ur747 leader" in `~alvinz/UR_747_teleop`,
 with tunable admittance, position tracking and penetration-based force feedback) would be the next
 step for leader-side control; it is not part of this branch.
+
+## Safeguards compared with recording_studio
+
+Sources: the MotionGuide Live Control URCap scripts (`leader.script`, `follower.script`,
+`collision_detection.script`, `collision_liveness.script` in `~/ai-trainer-0.2.8`), the settings in
+each arm's deployed `Default program` (read 2026-10-22), and recording_studio's binaries.
+
+**Robot-side (inside the vendor programs; kept whenever a session uses the vendor programs):**
+
+| Safeguard | Where | Active on 747 |
+| --- | --- | --- |
+| Joint velocity damping above 180/150/150/180/180/190 deg/s, torque clamped to joint ratings, damping clamped to 0.2 x rating | follower | yes |
+| Leader admittance capped at 1.5 m/s and 180 deg/s; singularity handling; virtual walls at joint limits | leader | yes |
+| Leader moves only while the grab button is held; hold input freezes it; F/T re-zeroed on release | leader | yes |
+| Leader contact damping from the follower wrench (quadratic up to 20 N, removes push into contact) | leader | yes (needs `haptic_feedback`) |
+| Leader in-script self-collision check, predictive (only blocks motion that gets closer) | leader | yes (`check_self_collision_in_script`) |
+| External collision checker gate: hold on its flag or a stale heartbeat (fail-closed) | both | **off** (`collision_checker_active = False`); nothing to send |
+| On Play: leader `movej` (0.2 rad/s) of elbow/wrist2 into the working range | leader | yes |
+| Path-divergence `movej` at 0.2 rad/s | follower | Modbus mode only: in register (RTDE) mode the program assumes the path has converged |
+
+**PC-side:**
+
+| Safeguard | recording_studio | this stack |
+| --- | --- | --- |
+| Refuse unless safety mode NORMAL | yes | yes, plus Remote control, expected program loaded and STOPPED, not already PLAYING, registers not IN_USE |
+| Slow start alignment of follower onto leader | `start_mode: reconciliate` | `align_joint_vel` (0.3 rad/s; 0.2 gentle) until within 0.05 rad, re-armed after any stale gap |
+| Protective-stop handling | UI unlock / restart safety | refuses and latches; unlock on the pendant |
+| Start confirmation | `CONFIRM_SAFETY` UI step | none (start is the operator running the session) |
+| Setpoint rate limit, lead clamp, stale-command hold, joint-limit trip, NaN/shape trip | not observed | yes |
+| Table floor guard (TCP and link frame origins above the table) | not observed | yes (`rig.yaml` clearance) |
+| Stop latch every tick + out-of-band REST stop from any shell | not observed | yes (`rr-ur-stop`) |
+| Did-Play-move-the-arm check | not observed | yes (latches on > 5 mrad) |
+
+**Still missing in both (consider before long sessions):**
+
+- **Follower-follower collision**: nothing checks the two followers against each other (Scale's
+  external checker is disabled; the leader's self-collision check covers only the leader).
+  `rig.yaml` has `inter_arm: 0.12`, but no driver enforces it yet.
+- **Process death mid-motion**: the vendor follower has no watchdog in register mode; if the PC
+  process dies it holds its last target (same as recording_studio). The hardware e-stop and
+  `rr-ur-stop` are the backstops. `rr servo` adds an RTDE watchdog.
+- **Leader DI forwarding**: recording_studio forwards the leader's grab/hold to follower bits 64/65,
+  so the follower re-zeroes its F/T sensor on release. Not done here, so the follower wrench (and the
+  leader's contact damping from it) can carry offset drift over a long session.
+- **`rr servo` followers** do not have the vendor follower's velocity damping or torque clamps:
+  protection is `servoj`, the program's `vmax`/`max_jump`, the PC-side limits and UR's safety
+  configuration.
 
 ## Bring-up checklist
 
@@ -128,3 +176,24 @@ step for leader-side control; it is not part of this branch.
 - `robots_realtime/rig/`: rig model (`configs/ur747_bimanual/rig.yaml`, run_002 calibration, 155.8 mm
   2F-85 tool point), stop latch, `rr servo` builder.
 - Tests: `tests/test_ur747_teleop.py`, `tests/test_dionysus_rig.py`, `tests/test_servo_program.py`.
+
+## Camera bindings on dionysus
+
+`pyorbbecsdk` is not on PyPI for this platform. Build it for the session's Python from the shared
+source (SDK 2.8.6, the same as recording_studio's):
+
+```bash
+rsync -a --exclude build --exclude .git ~/Desktop/pyorbbecsdk/ ~/justinyu/build/pyorbbecsdk-src/
+uv pip install "pybind11==2.12.0" "pybind11-global==2.12.0"
+cd ~/justinyu/build/pyorbbecsdk-src && mkdir -p build-cp311 && cd build-cp311
+cmake .. -DPython3_EXECUTABLE=$VENV/bin/python -Dpybind11_DIR=$($VENV/bin/python -m pybind11 --cmakedir) -DCMAKE_BUILD_TYPE=Release
+make -j8
+SP=$($VENV/bin/python -c "import site; print(site.getsitepackages()[0])")
+cp pyorbbecsdk.cpython-311-aarch64-linux-gnu.so $SP/
+cp -a ../sdk/lib/arm64/libOrbbecSDK.so* ../sdk/lib/arm64/OrbbecSDKConfig.xml ../sdk/lib/arm64/extensions $SP/
+```
+
+Checked 2026-10-22: all four cameras open in one process in ~6 s and stream left colour 848x480
+(top ~60 Hz, others ~30 Hz) with the same intrinsics as recording_studio's CameraInfo
+(top fx/fy/cx/cy 410.9/411.0/415.8/241.8). The SDK logs "depth frame processor not found" and
+"RTT too large" in Dual Color mode; both are harmless.
