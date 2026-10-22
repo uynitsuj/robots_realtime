@@ -1,4 +1,4 @@
-# SYS-ID, left follower on "rr servo": static holds, friction sweeps, 4 excitations (last held out).
+# SYS-ID, left follower on "rr servo": static holds, friction sweeps, 5 excitations (last held out).
 # The other arm is not touched. Someone on the e-stop.
 #
 # Each trajectory is recorded as its own episode (follower joint_state with the full RTDE field list,
@@ -28,10 +28,11 @@ nodes:
       trajectories:
         - sysid/trajectories/left_static.npz
         - sysid/trajectories/left_friction.npz
-        - sysid/trajectories/left_excite_s0.npz
-        - sysid/trajectories/left_excite_s1.npz
-        - sysid/trajectories/left_excite_s2.npz
-        - sysid/trajectories/left_excite_s3.npz
+        - sysid/trajectories/left_excite_c0.npz
+        - sysid/trajectories/left_excite_c1.npz
+        - sysid/trajectories/left_excite_c2.npz
+        - sysid/trajectories/left_excite_c3.npz
+        - sysid/trajectories/left_excite_c4.npz
     state_topics:
       arm_left_follower: arm_left_follower/joint_state
     loop_mode: fixed_rate

@@ -28,10 +28,11 @@ nodes:
       trajectories:
         - sysid/trajectories/right_static.npz
         - sysid/trajectories/right_friction.npz
-        - sysid/trajectories/right_excite_s0.npz
-        - sysid/trajectories/right_excite_s1.npz
-        - sysid/trajectories/right_excite_s2.npz
-        - sysid/trajectories/right_excite_s3.npz
+        - sysid/trajectories/right_excite_c0.npz
+        - sysid/trajectories/right_excite_c1.npz
+        - sysid/trajectories/right_excite_c2.npz
+        - sysid/trajectories/right_excite_c3.npz
+        - sysid/trajectories/right_excite_c4.npz
     state_topics:
       arm_right_follower: arm_right_follower/joint_state
     loop_mode: fixed_rate

@@ -123,3 +123,31 @@ def test_agent_refuses_mismatched_arm(tmp_path):
 
     with pytest.raises(ValueError, match="left arm"):
         SysidTrajectoryAgent([_short_static(tmp_path, "left")], "right", rig_yaml=FAKE_RIG)
+
+
+def test_regressor_gravity_matches_energy_gradient():
+    from robots_realtime.rig.dionysus import fk
+
+    rig, arm, env, lim = _setup("left")
+    q0 = arm.home_q + np.array([0.2, -0.1, 0.3, 0.1, -0.2, 0.4])
+    Y = st.regressor(np.repeat(q0[None], 40, axis=0), arm, stride=1).reshape(-1, 6, 60)[5]
+    theta = np.zeros(60)
+    theta[50] = 1.0  # 1 kg point mass at the flange origin
+    U = lambda q: 9.81 * (arm.world_T_base @ fk(q))[2, 3]  # noqa: E731
+    grad = np.array([(U(q0 + 1e-6 * e) - U(q0 - 1e-6 * e)) / 2e-6 for e in np.eye(6)])
+    assert np.allclose(Y @ theta, grad, atol=1e-6)
+
+
+def test_widened_set_covers_recorded_region_and_excites():
+    rig, arm, env, lim = _setup("right")
+    static = st.static_holds("right", arm, env, lim, n_poses=20)
+    excite = st.excitation_set("right", arm, env, lim, n_centers=2, candidates=2)
+    assert len(excite) == 2
+    for tr in [static, *excite]:
+        assert st.check(tr.q, arm, env, lim, rig.surface_z, stride=4) == []
+        assert np.allclose(tr.q[0], tr.q[-1], atol=1e-6)  # every trajectory starts and ends at home
+    for tr in excite:
+        qe = tr.q[tr.phase == tr.phase_names.index("excite")]
+        assert np.abs(np.diff(qe, axis=0)).max() / st.DT >= 0.3
+    report = st.coverage("right", arm, [static, *excite])
+    assert report["tcp_cells_covered"] > 0.25 and report["excitation_regressor_rank"] >= 30

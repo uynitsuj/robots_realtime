@@ -11,6 +11,11 @@ the arm's rig home pose and validated sample by sample before anything is sent:
 - Floor: TCP and link frame origins above the table by ``tcp_floor`` / ``link_floor``
   (no contact is intended during free-space identification).
 
+Coverage: static poses and excitation centers are drawn from **recorded** joint
+configurations (``recorded_poses.npz``, a farthest-point sample of every pose the arm
+visited in those episodes), so they span the visited region and were each visited by an
+operator. Every trajectory starts and ends at the rig home pose.
+
 The painting side is covered by the right arm's observed box (its link y never
 exceeded 0.925 m in the board frame, below the 0.935 m keep-out).
 
@@ -33,6 +38,7 @@ RATE = 500.0
 DT = 1.0 / RATE
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ENVELOPE = ROOT / "configs" / "ur747_bimanual" / "sysid" / "envelope.yaml"
+DEFAULT_POSES = ROOT / "configs" / "ur747_bimanual" / "sysid" / "recorded_poses.npz"
 
 
 @dataclass
@@ -207,52 +213,92 @@ class _Builder:
         return Trajectory(arm, kind, np.concatenate(self.q), np.concatenate(self.phase), self.names, meta)
 
 
+# ── recorded poses ────────────────────────────────────────────────────────────
+
+
+def farthest_points(points: np.ndarray, k: int, start: np.ndarray | None = None) -> np.ndarray:
+    """Indices of ``k`` points chosen greedily to be far from each other (max-min distance)."""
+    pts = np.asarray(points, dtype=np.float64)
+    d = np.full(len(pts), np.inf) if start is None else np.abs(pts - start).max(1)
+    first = int(np.argmax(d)) if start is not None else 0
+    chosen = [first]
+    d = np.minimum(d, np.abs(pts - pts[first]).max(1))
+    for _ in range(min(k, len(pts)) - 1):
+        i = int(np.argmax(d))
+        chosen.append(i)
+        d = np.minimum(d, np.abs(pts - pts[i]).max(1))
+    return np.asarray(chosen)
+
+
+def build_recorded_poses(export_dir: str | Path, out: str | Path = DEFAULT_POSES, stride: int = 100,
+                         k: int = 3000) -> Path:
+    """Farthest-point sample of every recorded follower pose (``export_episode.py`` NPZs)."""
+    import glob
+
+    arrays = {}
+    for side in ("left", "right"):
+        files = sorted(glob.glob(f"{export_dir}/*_{side}.npz"))
+        q = np.concatenate([np.load(f)["actual_q"][::stride] for f in files])
+        arrays[side] = q[farthest_points(q, k)].astype(np.float32)
+        arrays[f"{side}_episodes"] = np.array(len(files))
+    out = Path(out)
+    np.savez_compressed(out, **arrays)
+    return out
+
+
+def load_recorded_poses(side: str, arm: ArmModel, env: Envelope, limits: Limits, surface_z: float = 0.0,
+                        path: str | Path | None = None) -> np.ndarray:
+    """Recorded poses of ``side`` that pass the (shrunk) envelope and floor checks."""
+    q = np.load(path or DEFAULT_POSES)[side].astype(np.float64)
+    return np.asarray([x for x in q if not check_pose(x, arm, env, limits, surface_z)])
+
+
+def _route(start, waypoints, arm, env, limits, surface_z, move_vel, home) -> list[np.ndarray] | None:
+    """Validated min-jerk legs from ``start`` through ``waypoints``; via ``home`` if direct fails."""
+    for via in ([], [home]):
+        legs, cur, ok = [], start, True
+        for wp in [*via, *waypoints]:
+            leg = min_jerk(cur, wp, move_vel, limits.amax)
+            if check(leg, arm, env, limits, surface_z, stride=10):
+                ok = False
+                break
+            legs.append(leg)
+            cur = wp
+        if ok:
+            return legs
+    return None
+
+
 # ── generators ────────────────────────────────────────────────────────────────
 
 
 def static_holds(side: str, arm: ArmModel, env: Envelope, limits: Limits, n_poses: int = 40,
                  settle_s: float = 2.0, record_s: float = 2.0, move_vel: float = 0.25,
-                 reverse_every: int = 3, overshoot: float = 0.04, seed: int = 0,
-                 surface_z: float = 0.0) -> Trajectory:
-    """Hold ``n_poses`` poses (gravity, payload, static friction). Every ``reverse_every``-th
-    pose is approached from the opposite side (overshoot, then back) to expose the static
-    friction band."""
-    rng = np.random.default_rng(seed)
+                 reverse_every: int = 3, overshoot: float = 0.04, surface_z: float = 0.0,
+                 poses_path: str | Path | None = None) -> Trajectory:
+    """Hold ``n_poses`` recorded poses spread over the visited region (gravity, payload,
+    static friction). Every ``reverse_every``-th pose is approached from the opposite side
+    (overshoot, then back) to expose the static friction band."""
     home = np.clip(arm.home_q, env.q_lo, env.q_hi)
-    span = np.array([0.6, 0.5, 0.6, 0.8, 0.8, 1.0])
-    poses = []
-    for _ in range(20000):
-        q = np.clip(home + rng.uniform(-span, span), env.q_lo, env.q_hi)
-        if not check_pose(q, arm, env, limits, surface_z):
-            poses.append(q)
-        if len(poses) >= n_poses:
-            break
+    library = load_recorded_poses(side, arm, env, limits, surface_z, poses_path)
+    poses = library[farthest_points(library, 3 * n_poses, start=home)]
     order, rest, cur = [], list(range(len(poses))), home
     while rest:  # greedy nearest neighbour keeps moves short
         k = min(rest, key=lambda i: np.abs(poses[i] - cur).max())
         order.append(k)
         rest.remove(k)
         cur = poses[k]
-    def safe(*waypoints) -> list[np.ndarray] | None:
-        """Min-jerk legs through ``waypoints`` from the current pose, or None if any leg leaves the envelope."""
-        legs, cur = [], b.last
-        for wp in waypoints:
-            leg = min_jerk(cur, wp, move_vel, limits.amax)
-            if check(leg, arm, env, limits, surface_z, stride=10):
-                return None
-            legs.append(leg)
-            cur = wp
-        return legs
-
     b = _Builder(home)
     held = 0
     for k in order:
+        if held >= n_poses:
+            break
         target = poses[k]
         route = [target]
         if reverse_every and held % reverse_every == reverse_every - 1:
             beyond = np.clip(target + overshoot * np.sign(target - b.last), env.q_lo, env.q_hi)
             route = [beyond, target]
-        legs = safe(*route) or safe(home, *route)  # direct, else through home
+        legs = _route(b.last, route, arm, env, limits, surface_z, move_vel, home)
         if legs is None:
             continue
         for leg in legs:
@@ -260,52 +306,54 @@ def static_holds(side: str, arm: ArmModel, env: Envelope, limits: Limits, n_pose
         b.hold(settle_s, "settle")
         b.hold(record_s, "hold")
         held += 1
-    b.add(min_jerk(b.last, home, move_vel, limits.amax), "move")
-    return b.build(side, "static", {"n_poses": held, "seed": seed, "settle_s": settle_s,
-                                    "record_s": record_s, "reverse_every": reverse_every})
+    back = _route(b.last, [home], arm, env, limits, surface_z, move_vel, home)
+    for leg in back or [min_jerk(b.last, home, move_vel, limits.amax)]:
+        b.add(leg, "move")
+    return b.build(side, "static", {"n_poses": held, "settle_s": settle_s, "record_s": record_s,
+                                    "reverse_every": reverse_every, "poses": "recorded, farthest-point"})
 
 
 def friction_sweeps(side: str, arm: ArmModel, env: Envelope, limits: Limits,
                     joints=(0, 1, 2, 3, 4, 5), speeds=(0.02, 0.05, 0.1, 0.2, 0.4, 0.6, 0.8),
-                    half_stroke: float = 0.35, accel: float = 1.0, dwell_s: float = 0.5,
-                    move_vel: float = 0.25, surface_z: float = 0.0) -> Trajectory:
-    """Constant-speed strokes, one joint at a time (others at home), both directions."""
+                    half_stroke: float = 0.6, slow_stroke: float = 0.6, accel: float = 1.5,
+                    dwell_s: float = 0.5, move_vel: float = 0.25, surface_z: float = 0.0) -> Trajectory:
+    """Constant-speed strokes, one joint at a time (others at home), both directions.
+
+    Strokes use the largest symmetric range around home (<= ``half_stroke``) that stays in
+    the envelope; speeds below 0.1 rad/s use at most ``slow_stroke`` of it to bound time.
+    Phase names carry the speed actually reached."""
     home = np.clip(arm.home_q, env.q_lo, env.q_hi)
     b = _Builder(home)
     used = {}
     for j in joints:
-        # Largest symmetric stroke around home that stays in the envelope (checked densely).
         A = half_stroke
         while A > 0.05:
-            probe = np.repeat(home[None], 41, axis=0)
-            probe[:, j] += np.linspace(-A, A, 41)
+            probe = np.repeat(home[None], 61, axis=0)
+            probe[:, j] += np.linspace(-A, A, 61)
             if all(not check_pose(q, arm, env, limits, surface_z) for q in probe):
                 break
-            A *= 0.85
+            A *= 0.9
         if A <= 0.05:
             continue
         used[j] = round(A, 3)
         lo = home.copy()
         lo[j] -= A
         b.add(min_jerk(b.last, lo, move_vel, limits.amax), "move")
-        reachable = float(np.sqrt(2 * A * accel / 2.0))  # peak speed a 2A stroke can reach
-        for v in sorted({round(min(v, limits.vmax, reachable), 3) for v in speeds}):
-            b.add(stroke(b.last, j, 2 * A, v, accel), f"j{j} +{v:g}")
+        for v_req in speeds:
+            dist = 2 * A if v_req >= 0.1 else min(2 * A, slow_stroke)
+            reachable = float(np.sqrt(dist * accel / 2.0))
+            v = round(min(v_req, limits.vmax, reachable), 3)
+            b.add(stroke(b.last, j, dist, v, accel), f"j{j} +{v:g}")
             b.hold(dwell_s, "dwell")
-            b.add(stroke(b.last, j, -2 * A, v, accel), f"j{j} -{v:g}")
+            b.add(stroke(b.last, j, -dist, v, accel), f"j{j} -{v:g}")
             b.hold(dwell_s, "dwell")
         b.add(min_jerk(b.last, home, move_vel, limits.amax), "move")
     return b.build(side, "friction", {"half_stroke": used, "speeds": list(speeds), "accel": accel})
 
 
-def excitation(side: str, arm: ArmModel, env: Envelope, limits: Limits, duration_s: float = 40.0,
-               base_hz: float = 0.1, harmonics: int = 5, fade_s: float = 3.0, seed: int = 0,
-               vmax: float = 0.6, amax: float = 1.5, surface_z: float = 0.0) -> Trajectory:
-    """Band-limited Fourier excitation of all six joints around home (inertial parameters)."""
-    rng = np.random.default_rng(seed)
-    home = np.clip(arm.home_q, env.q_lo, env.q_hi)
+def _fourier(center, room, rng, duration_s, base_hz, harmonics, fade_s, vmax, amax):
     t = np.arange(0.0, duration_s, DT)
-    w = np.ones_like(t)  # raised-cosine fade in/out: zero speed at both ends
+    w = np.ones_like(t)
     k = t < fade_s
     w[k] = 0.5 * (1 - np.cos(np.pi * t[k] / fade_s))
     k = t > duration_s - fade_s
@@ -315,46 +363,205 @@ def excitation(side: str, arm: ArmModel, env: Envelope, limits: Limits, duration
     ph = rng.uniform(0, 2 * np.pi, size=(6, harmonics))
     shape = np.einsum("jk,jkt->tj", a, np.sin(2 * np.pi * f[None, :, None] * t[None, None, :] + ph[..., None]))
     shape *= w[:, None]
-    # Per-joint scale for the speed/accel caps, then shrink until the envelope check passes.
     vel = np.gradient(shape, DT, axis=0)
     acc = np.gradient(vel, DT, axis=0)
-    scale = np.minimum(vmax / np.abs(vel).max(0), amax / np.abs(acc).max(0))
-    room = np.minimum(home - env.q_lo, env.q_hi - home)
-    scale = np.minimum(scale, room / np.abs(shape).max(0))
+    scale = np.minimum.reduce([vmax / np.abs(vel).max(0), amax / np.abs(acc).max(0), room / np.abs(shape).max(0)])
+    return center + shape * scale
+
+
+def excitation(side: str, arm: ArmModel, env: Envelope, limits: Limits, center=None, duration_s: float = 60.0,
+               base_hz: float = 0.05, harmonics: int = 5, fade_s: float = 4.0, seed: int = 0,
+               vmax: float = 0.7, amax: float = 1.8, move_vel: float = 0.25,
+               surface_z: float = 0.0) -> Trajectory | None:
+    """Band-limited Fourier excitation of all joints around ``center`` (default home),
+    framed by validated moves from and back to home. Amplitude per joint is the largest the
+    speed/accel caps and the joint box allow, then shrunk until the envelope check passes."""
+    rng = np.random.default_rng(seed)
+    home = np.clip(arm.home_q, env.q_lo, env.q_hi)
+    center = home if center is None else np.asarray(center, dtype=np.float64)
+    room = np.maximum(np.minimum(center - env.q_lo, env.q_hi - center), 1e-3)
+    q = _fourier(center, room, rng, duration_s, base_hz, harmonics, fade_s, vmax, amax)
+    lim = Limits(vmax, amax, limits.tcp_floor, limits.link_floor)
     g = 1.0
-    for _ in range(30):
-        q = home + g * shape * scale
-        if not check(q, arm, env, Limits(vmax, amax, limits.tcp_floor, limits.link_floor), surface_z, stride=10):
+    for _ in range(25):
+        qq = center + g * (q - center)
+        if not check(qq, arm, env, lim, surface_z, stride=10):
             break
-        g *= 0.85
+        g *= 0.88
     else:
-        raise RuntimeError("could not fit an excitation inside the envelope")
+        return None
+    to_center = _route(home, [center], arm, env, limits, surface_z, move_vel, home)
+    from_center = _route(center, [home], arm, env, limits, surface_z, move_vel, home)
+    if to_center is None or from_center is None:
+        return None
     b = _Builder(home)
-    b.add(q, "excite")
-    return b.build(side, "excite", {"seed": seed, "base_hz": base_hz, "harmonics": harmonics,
-                                    "duration_s": duration_s, "gain": round(g, 3),
-                                    "amplitude_rad": np.round(np.abs(q - home).max(0), 3).tolist()})
+    for leg in to_center:
+        b.add(leg, "move")
+    b.hold(1.0, "settle")
+    b.add(qq, "excite")
+    b.hold(1.0, "settle")
+    for leg in from_center:
+        b.add(leg, "move")
+    tr = b.build(side, "excite", {"seed": seed, "base_hz": base_hz, "harmonics": harmonics,
+                                  "duration_s": duration_s, "gain": round(g, 3),
+                                  "center": np.round(center, 4).tolist(),
+                                  "amplitude_rad": np.round(np.abs(qq - center).max(0), 3).tolist()})
+    return tr
+
+
+# ── inertial regressor (for excitation selection and coverage reports) ─────────
+
+
+def _skew_rows(v):
+    """(N,3) -> (N,3,3) cross-product matrices."""
+    z = np.zeros(len(v))
+    return np.stack([np.stack([z, -v[:, 2], v[:, 1]], -1), np.stack([v[:, 2], z, -v[:, 0]], -1),
+                     np.stack([-v[:, 1], v[:, 0], z], -1)], 1)
+
+
+def regressor(q: np.ndarray, arm: ArmModel, g_world=(0.0, 0.0, -9.81), stride: int = 10) -> np.ndarray:
+    """Joint-torque regressor Y with tau = Y @ theta, theta = 10 inertial parameters per link
+    (m, m*c, I about the link origin, in the DH link frame); (6*N, 60).
+
+    Velocities and accelerations of every link come from finite differences of the
+    rig-model kinematics along the path, so gravity uses the real 45-degree mount."""
+    from robots_realtime.rig.dionysus import fk_frames
+
+    q = np.asarray(q, dtype=np.float64)
+    frames = np.array([[arm.world_T_base @ T for T in fk_frames(x)] for x in q])  # (N,6,4,4)
+    R, o = frames[..., :3, :3], frames[..., :3, 3]
+    dt = DT
+    dR = np.gradient(R, dt, axis=0)
+    W = np.einsum("nlij,nlkj->nlik", dR, R)  # dR R^T, skew of omega
+    w = np.stack([W[..., 2, 1], W[..., 0, 2], W[..., 1, 0]], -1)  # (N,6,3) world
+    wd = np.gradient(w, dt, axis=0)
+    a = np.gradient(np.gradient(o, dt, axis=0), dt, axis=0) - np.asarray(g_world)
+    sel = slice(2, len(q) - 2, stride)
+    R, o, w, wd, a = R[sel], o[sel], w[sel], wd[sel], a[sel]
+    base = arm.world_T_base
+    z_axes = np.concatenate([np.broadcast_to(base[:3, 2], (len(R), 1, 3)), R[:, :5, :, 2]], 1)
+    p_axes = np.concatenate([np.broadcast_to(base[:3, 3], (len(R), 1, 3)), o[:, :5]], 1)
+    n = len(R)
+    Y = np.zeros((n, 6, 60))
+    for i in range(6):
+        Ri = R[:, i]
+        wl = np.einsum("nji,nj->ni", Ri, w[:, i])
+        wdl = np.einsum("nji,nj->ni", Ri, wd[:, i])
+        al = np.einsum("nji,nj->ni", Ri, a[:, i])
+        Sw, Swd, Sa = _skew_rows(wl), _skew_rows(wdl), _skew_rows(al)
+        # Force F = m a + wd x h + w x (w x h); moment N = I wd + w x (I w) + h x a  (link frame)
+        AF = np.zeros((n, 3, 10))
+        AN = np.zeros((n, 3, 10))
+        AF[:, :, 0] = al
+        AF[:, :, 1:4] = Swd + Sw @ Sw
+        AN[:, :, 1:4] = -Sa
+        # I(x) = [[Ixx,Ixy,Ixz],[Ixy,Iyy,Iyz],[Ixz,Iyz,Izz]] @ x, params order Ixx Ixy Ixz Iyy Iyz Izz
+        def lin(x):
+            out = np.zeros((n, 3, 6))
+            out[:, 0, 0], out[:, 0, 1], out[:, 0, 2] = x[:, 0], x[:, 1], x[:, 2]
+            out[:, 1, 1], out[:, 1, 3], out[:, 1, 4] = x[:, 0], x[:, 1], x[:, 2]
+            out[:, 2, 2], out[:, 2, 4], out[:, 2, 5] = x[:, 0], x[:, 1], x[:, 2]
+            return out
+        AN[:, :, 4:10] = lin(wdl) + Sw @ lin(wl)
+        F = np.einsum("nij,njk->nik", Ri, AF)
+        N = np.einsum("nij,njk->nik", Ri, AN)
+        for j in range(i + 1):  # joint j moves link i
+            r = o[:, i] - p_axes[:, j]
+            moment = N + np.cross(r[:, :, None], F, axisa=1, axisb=1, axisc=1)
+            Y[:, j, 10 * i:10 * i + 10] = np.einsum("ni,nik->nk", z_axes[:, j], moment)
+    return Y.reshape(-1, 60)
+
+
+def condition(Y: np.ndarray, rank: int | None = None) -> tuple[float, int]:
+    """Condition number over the identifiable subspace (top ``rank`` singular values)."""
+    s = np.linalg.svd(Y / max(1.0, np.abs(Y).max()), compute_uv=False)
+    if rank is None:
+        rank = int((s > s[0] * 1e-6).sum())
+    return float(s[0] / s[rank - 1]), rank
+
+
+def excitation_set(side: str, arm: ArmModel, env: Envelope, limits: Limits, n_centers: int = 5,
+                   candidates: int = 6, min_amplitude: float = 0.12, min_peak_speed: float = 0.3,
+                   surface_z: float = 0.0,
+                   poses_path: str | Path | None = None, **kw) -> list[Trajectory]:
+    """``n_centers`` excitations at recorded poses spread over the visited region (the first
+    is home); per center the candidate seed with the best-conditioned inertial regressor.
+    Centers whose excitation the envelope shrinks below ``min_amplitude`` (median over joints,
+    rad) or ``min_peak_speed`` (rad/s, excitation phase) are skipped: near the bounds the motion
+    would be too small or too slow to identify the inertial terms."""
+    home = np.clip(arm.home_q, env.q_lo, env.q_hi)
+    library = load_recorded_poses(side, arm, env, limits, surface_z, poses_path)
+    # centers need room to move: prefer recorded poses away from the joint-box faces
+    margin = np.minimum(library - env.q_lo, env.q_hi - library).min(1)
+    roomy = library[margin > 0.2] if (margin > 0.2).sum() >= 4 * n_centers else library
+    centers = [home] + list(roomy[farthest_points(roomy, 4 * n_centers, start=home)])
+    out, rank = [], None
+    for center in centers:
+        if len(out) >= n_centers:
+            break
+        best = None
+        for c in range(candidates):
+            tr = excitation(side, arm, env, limits, center=center, seed=100 * len(out) + c,
+                            surface_z=surface_z, **kw)
+            if tr is None or np.median(tr.meta["amplitude_rad"]) < min_amplitude:
+                continue
+            qe = tr.q[tr.phase == tr.phase_names.index("excite")]
+            if np.abs(np.diff(qe, axis=0)).max() / DT < min_peak_speed:
+                continue
+            Y = regressor(tr.q[tr.phase == tr.phase_names.index("excite")], arm)
+            if rank is None:
+                _, rank = condition(Y)
+            cond, _ = condition(Y, rank)
+            if best is None or cond < best[0]:
+                best = (cond, tr)
+        if best is not None:
+            best[1].meta["regressor_condition"] = round(best[0], 1)
+            out.append(best[1])
+    return out
+
+
+# ── coverage ──────────────────────────────────────────────────────────────────
+
+
+def coverage(side: str, arm: ArmModel, trajs: list[Trajectory], poses_path: str | Path | None = None,
+             cell: float = 0.05) -> dict:
+    """How much of the recorded region the trajectories visit (5 cm TCP cells, joint spans)
+    and how well the whole set conditions the inertial regressor."""
+    rec = np.load(poses_path or DEFAULT_POSES)[side].astype(np.float64)
+    q = np.concatenate([t.q[::25] for t in trajs])
+    cells = lambda qs: {tuple(np.floor(arm.tcp_world(x)[:3, 3] / cell).astype(int)) for x in qs}  # noqa: E731
+    rc, tc = cells(rec), cells(q)
+    span_rec = np.percentile(rec, 99, 0) - np.percentile(rec, 1, 0)
+    ex = [t for t in trajs if t.kind == "excite"]
+    cond = None
+    if ex:
+        Y = np.concatenate([regressor(t.q[t.phase == t.phase_names.index("excite")], arm) for t in ex])
+        cond, rank = condition(Y)
+    return {"tcp_cells_covered": round(len(rc & tc) / len(rc), 3), "tcp_cells_recorded": len(rc),
+            "joint_span_ratio": np.round((q.max(0) - q.min(0)) / span_rec, 2).tolist(),
+            "excitation_regressor_condition": None if cond is None else round(cond, 1),
+            "excitation_regressor_rank": None if cond is None else rank}
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 
 def generate(side: str, kind: str, out: Path, rig_yaml: str | None = None, envelope: str | None = None,
-             excite_seeds=(0, 1, 2, 3)) -> list[Path]:
+             poses: str | None = None, n_centers: int = 5) -> list[Path]:
     rig = load_rig(rig_yaml)
     arm = rig.arms[side]
     env = load_envelope(side, envelope)
     lim = Limits()
     jobs = []
     if kind in ("static", "all"):
-        jobs.append(("static", static_holds(side, arm, env, lim, surface_z=rig.surface_z)))
+        jobs.append(("static", static_holds(side, arm, env, lim, surface_z=rig.surface_z, poses_path=poses)))
     if kind in ("friction", "all"):
         jobs.append(("friction", friction_sweeps(side, arm, env, lim, surface_z=rig.surface_z)))
     if kind in ("excite", "all"):
-        for s in excite_seeds:
-            tr = excitation(side, arm, env, lim, seed=s, surface_z=rig.surface_z)
-            tr.meta["held_out"] = s == excite_seeds[-1]
-            jobs.append((f"excite_s{s}", tr))
+        ex = excitation_set(side, arm, env, lim, n_centers=n_centers, surface_z=rig.surface_z, poses_path=poses)
+        for i, tr in enumerate(ex):
+            tr.meta["held_out"] = i == len(ex) - 1
+            jobs.append((f"excite_c{i}", tr))
     paths = []
     for name, tr in jobs:
         bad = check(tr.q, arm, env, lim, rig.surface_z)
@@ -362,20 +569,33 @@ def generate(side: str, kind: str, out: Path, rig_yaml: str | None = None, envel
             raise RuntimeError(f"{side} {name} failed validation: {bad[:3]}")
         v = np.abs(np.diff(tr.q, axis=0)).max() / DT
         p = tr.save(out / f"{side}_{name}.npz")
-        print(f"{p}: {tr.duration:6.1f} s, peak joint speed {v:.2f} rad/s, {len(tr.phase_names)} phases")
+        extra = f", regressor cond {tr.meta['regressor_condition']}" if "regressor_condition" in tr.meta else ""
+        print(f"{p}: {tr.duration:6.1f} s, peak joint speed {v:.2f} rad/s{extra}")
         paths.append(p)
+    report = coverage(side, arm, [tr for _, tr in jobs], poses)
+    (out / f"{side}_coverage.json").write_text(json.dumps(report, indent=1))
+    print(f"{side} coverage: {report}")
     return paths
 
 
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--arm", choices=("left", "right"), required=True)
+    ap.add_argument("--arm", choices=("left", "right"))
     ap.add_argument("--kind", choices=("static", "friction", "excite", "all"), default="all")
     ap.add_argument("--out", type=Path, default=Path("sysid/trajectories"))
     ap.add_argument("--rig", default=None)
     ap.add_argument("--envelope", default=None)
+    ap.add_argument("--poses", default=None, help="recorded pose library (default: configs/.../recorded_poses.npz)")
+    ap.add_argument("--centers", type=int, default=5, help="excitation centers per arm")
+    ap.add_argument("--build-poses", metavar="EXPORT_DIR",
+                    help="rebuild the recorded pose library from export_episode.py NPZs and exit")
     a = ap.parse_args(argv)
-    generate(a.arm, a.kind, a.out, a.rig, a.envelope)
+    if a.build_poses:
+        print(build_recorded_poses(a.build_poses, a.poses or DEFAULT_POSES))
+        return
+    if not a.arm:
+        ap.error("--arm is required")
+    generate(a.arm, a.kind, a.out, a.rig, a.envelope, a.poses, a.centers)
 
 
 if __name__ == "__main__":

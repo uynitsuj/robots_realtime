@@ -2,7 +2,9 @@
 # replayed through the rig model (configs/ur747_bimanual/rig.yaml: run_002 bases, UR5e DH, 155.8 mm tool point)
 # at 20 Hz. Board ("checkerboard") frame, metres / radians. links = DH frame origins (shoulder..flange), base excluded.
 # Sys-id trajectories must stay INSIDE these boxes shrunk by the margins in robots_realtime/sysid/trajectories.py:
-# they only go where operators already took each arm.
+# they only go where operators already took each arm. recorded_poses.npz (next to this file) holds a
+# farthest-point sample of 3000 recorded follower poses per arm; static poses and excitation centers are
+# drawn from it. Rebuild both from new exports with `rr-ur-sysid-traj --build-poses EXPORT_DIR`.
 
 left:
   episodes: 316
